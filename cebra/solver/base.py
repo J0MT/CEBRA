@@ -171,9 +171,11 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             )
         return loss
 
-    def fit(
+    import copy
+
+def fit(
         self,
-        loader: cebra.data.Loader,
+        loader: cebra.data.Loader,  # Single loader for normal training or list of tasks for MAML
         valid_loader: cebra.data.Loader = None,
         *,
         save_frequency: int = None,
@@ -181,75 +183,73 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         decode: bool = False,
         logdir: str = None,
         save_hook: Callable[[int, "Solver"], None] = None,
-        use_maml: bool = False,  # NEW: Toggle MAML
-        maml_steps: int = 1,     # NEW: Number of inner-loop steps
-        maml_lr: float = 1e-3,   # NEW: Inner-loop learning rate
+        use_maml: bool = False,      # NEW: Flag to toggle MAML
+        maml_steps: int = 1,         # NEW: Inner-loop gradient steps
+        maml_lr: float = 1e-3        # NEW: Inner-loop learning rate
     ):
-        """Train model for the specified number of steps.
+        """Train model for the specified number of steps, with optional MAML support."""
     
-        Args:
-            loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
-            valid_loader: Data loader used for validation of the model.
-            save_frequency: Frequency for saving model checkpoints.
-            valid_frequency: Frequency for running validation.
-            decode: Decode during training.
-            logdir: Logging directory for writing model checkpoints.
-            save_hook: Hook function to be executed after saving.
-            use_maml: If True, enable MAML training.
-            maml_steps: Number of inner-loop steps for MAML.
-            maml_lr: Learning rate for MAML's inner loop updates.
-        """
-        self.to(loader.device)
-    
-        iterator = self._get_loader(loader)
+        self.to("cuda" if torch.cuda.is_available() else "cpu")
         self.model.train()
-        meta_optimizer = self.optimizer  # Outer-loop optimizer (for MAML)
-    
-        for num_steps, batch in iterator:
-            if use_maml:  # NEW: MAML Logic
-                # ---- Inner Loop ----
-                model_copy = copy.deepcopy(self.model)  # Clone model for inner-loop updates
-                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
-    
-                for _ in range(maml_steps):
-                    stats = self.step(batch, model=model_copy)
-                    loss = stats['total']
-                    inner_optimizer.zero_grad()
-                    loss.backward()
-                    inner_optimizer.step()
-    
-                # ---- Outer Loop ----
-                meta_loss = self._meta_loss(batch, model_copy)
+
+        if use_maml:  # ---- NEW: MAML Logic ----
+            meta_optimizer = self.optimizer  # Outer-loop optimizer
+
+            for epoch in range(1, maml_steps + 1):
+                print(f"Epoch {epoch}: MAML Training")
                 meta_optimizer.zero_grad()
+                meta_loss = 0.0
+
+                # Iterate through tasks (Rats 1, 2, 3)
+                for task_id, task_data in enumerate(loader):
+                    task_loader = cebra.data.Loader(task_data, batch_size=len(task_data))  # Single batch
+                    model_copy = copy.deepcopy(self.model)  # Clone model for inner-loop updates
+                    inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
+
+                    for batch in task_loader:  # Full dataset as one batch
+                        stats = self.step(batch, model=model_copy)
+                        loss = stats['total']
+                        inner_optimizer.zero_grad()
+                        loss.backward()
+                        inner_optimizer.step()
+
+                    # Compute meta-loss on the task
+                    task_meta_loss = self._meta_loss(task_loader, model_copy)
+                    meta_loss += task_meta_loss
+
+                # Outer loop update
+                meta_loss /= len(loader)  # Average loss across tasks
                 meta_loss.backward()
                 meta_optimizer.step()
-    
-                # Log meta-loss every 50 steps
-                if num_steps % 50 == 0:
-                    print(f"Step {num_steps}: Meta Loss = {meta_loss.item():.6f}")
-                    iterator.set_description({"meta_loss": meta_loss.item()})
-    
-            else:  # Standard CEBRA Training
+                print(f"Meta Loss: {meta_loss.item():.6f}")
+
+        else:  # ---- Existing Logic: Standard Training ----
+            iterator = self._get_loader(loader)
+            for num_steps, batch in iterator:
                 stats = self.step(batch)
+                iterator.set_description(stats)
+
+                # Log loss every 50 steps
                 if num_steps % 50 == 0:
                     print(f"Step {num_steps}: Loss = {stats['total']:.6f}")
-                    iterator.set_description(stats)
-    
-            # Save/validate as per original logic
-            if save_frequency is not None and num_steps % save_frequency == 0:
-                self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
-    
-            if valid_loader and num_steps % valid_frequency == 0:
-                validation_loss = self.validation(valid_loader)
-                if self.best_loss is None or validation_loss < self.best_loss:
-                    self.best_loss = validation_loss
-                    self.save(logdir, "checkpoint_best.pth")
-    
-            if decode:
-                self.decode_history.append(self.decoding(loader, valid_loader))
-    
-            if save_hook is not None:
-                save_hook(num_steps, self)
+
+                # Save model
+                if save_frequency and num_steps % save_frequency == 0:
+                    self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+
+                # Validation
+                if valid_loader and num_steps % valid_frequency == 0:
+                    validation_loss = self.validation(valid_loader)
+                    if self.best_loss is None or validation_loss < self.best_loss:
+                        self.best_loss = validation_loss
+                        self.save(logdir, "checkpoint_best.pth")
+
+                if decode:
+                    self.decode_history.append(self.decoding(loader, valid_loader))
+
+                if save_hook:
+                    save_hook(num_steps, self)
+
 
     def step(self, batch: cebra.data.Batch) -> dict:
         """Perform a single gradient update.
