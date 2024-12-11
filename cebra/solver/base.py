@@ -159,9 +159,8 @@ class Solver(abc.ABC, cebra.io.HasDevice):
 
     def fit(
             self,
-            loader: cebra.data.Loader = None,  # Standard CEBRA loader
-            tasks: list = None,  # List of pre-split tasks [(data, labels), ...]
-            valid_loader: cebra.data.Loader = None,  # Optional validation loader
+            loader: cebra.data.Loader,
+            valid_loader: cebra.data.Loader = None,
             *,
             save_frequency: int = None,
             valid_frequency: int = None,
@@ -169,86 +168,49 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             logdir: str = None,
             save_hook: Callable[[int, "Solver"], None] = None,
         ):
-        """
-        Train model with support for loaders and task-based training.
+            """Train model for the specified number of steps.
     
-        Args:
-            loader: CEBRA data loader for standard training.
-            tasks: List of pre-split tasks, where each task is (data, labels).
-            valid_loader: Optional validation loader.
-            save_frequency: Frequency for saving model checkpoints.
-            valid_frequency: Frequency for running validation.
-            decode: Whether to run decoding logic during checkpoint saving.
-            logdir: Directory for saving checkpoints.
-            save_hook: Optional hook for custom save operations.
+            Args:
+                loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
+                    Each batch contains reference, positive and negative input samples.
+                valid_loader: Data loader used for validation of the model.
+                save_frequency: If not `None`, the frequency for automatically saving model checkpoints
+                    to `logdir`.
+                valid_frequency: The frequency for running validation on the ``valid_loader`` instance.
+                logdir:  The logging directory for writing model checkpoints. The checkpoints
+                    can be read again using the `solver.load` function, or manually via loading the
+                    state dict.
     
-        Returns:
-            loss_history: List of tracked losses during training.
-        """
+            TODO:
+                * Refine the API here. Drop the validation entirely, and implement this via a hook?
+            """
     
-        loss_history = []  # Store loss for each step/task
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Correct device handling
-        self.to(device)
-        self.model.train()
+            self.to(loader.device)
     
-        # --- Mode 1: Standard Loader-Based Training ---
-        if loader is not None:
-            print("Training with Loader...")
             iterator = self._get_loader(loader)
-    
+            self.model.train()
             for num_steps, batch in iterator:
-                # Move batch to the correct device
-                batch = batch.to(device)
-    
                 stats = self.step(batch)
-                loss = stats["total"]
-                loss_history.append(loss)  # Track loss
+                iterator.set_description(stats)
     
-                # Print progress
-                print(f"Step {num_steps}: Loss = {loss:.4f}")
-    
-                # Save checkpoints
-                if save_frequency and num_steps % save_frequency == 0:
-                    if decode:
-                        print("Running decoding...")
-                        self.decode_history.append(self.decoding(loader, valid_loader))
-                    if save_hook:
-                        save_hook(num_steps, self)
-                    self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
-    
-                # Validation
-                if valid_frequency and num_steps % valid_frequency == 0 and valid_loader is not None:
+                if save_frequency is None:
+                    continue
+                save_model = num_steps % save_frequency == 0
+                run_validation = (valid_loader
+                                  is not None) and (num_steps % valid_frequency
+                                                    == 0)
+                if run_validation:
                     validation_loss = self.validation(valid_loader)
-                    print(f"Validation Loss at step {num_steps}: {validation_loss:.4f}")
                     if self.best_loss is None or validation_loss < self.best_loss:
                         self.best_loss = validation_loss
                         self.save(logdir, "checkpoint_best.pth")
-    
-        # --- Mode 2: Task-Based Training ---
-        elif tasks is not None:
-            print("Training with Tasks...")
-            for task_index, (task_data, task_labels) in enumerate(tasks):
-                # Move data and labels to the correct device
-                task_data = torch.tensor(task_data).float().to(device)
-                task_labels = torch.tensor(task_labels).float().to(device)
-    
-                self.optimizer.zero_grad()
-                predictions = self.model(task_data)
-                loss = self.criterion(predictions, task_labels)
-                loss.backward()
-                self.optimizer.step()
-    
-                loss_history.append(loss.item())  # Track loss
-                print(f"Task {task_index + 1}: Loss = {loss.item():.4f}")
-    
-                # Save checkpoints
-                if save_frequency and (task_index + 1) % save_frequency == 0:
-                    self.save(logdir, f"checkpoint_task_{task_index + 1:#07d}.pth")
-    
-        else:
-            raise ValueError("Either 'loader' or 'tasks' must be provided for training.")
-    
-        return loss_history  # Return the list of losses
+                if save_model:
+                    if decode:
+                        self.decode_history.append(
+                            self.decoding(loader, valid_loader))
+                    if save_hook is not None:
+                        save_hook(num_steps, self)
+                    self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
 
 
 
