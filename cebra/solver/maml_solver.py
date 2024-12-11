@@ -11,16 +11,22 @@ class MAMLSolver:
         self.optimizer = optimizer  # Optimizer for the outer loop
     
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
-        self.model.train()  # Set the model in training mode
-        self.to_device("cuda" if torch.cuda.is_available() else "cpu")  # Move model to device
+        """MAML training loop integrated with CEBRA's Solver."""
         
-        # Outer loop (MAML training)
+        self.to("cuda" if torch.cuda.is_available() else "cpu")  # Move model to the appropriate device
+    
+        # Set the actual model inside CEBRA in training mode
+        self.model.model_[0].train()  # Access the model inside CEBRA and set it to training mode
+    
+        meta_optimizer = self.optimizer  # Use the outer-loop optimizer
+    
+        # Outer loop (MAML) iteration
         for epoch in range(1, maml_steps + 1):
             print(f"Epoch {epoch}: MAML Training")
-            self.optimizer.zero_grad()  # Reset outer loop optimizer
+            meta_optimizer.zero_grad()  # Reset outer loop optimizer
             
-            meta_loss = 0.0  # Initialize meta-loss for the epoch
-            
+            meta_loss = 0.0  # Initialize meta-loss for this epoch
+    
             # Loop over tasks (each task is a session or model in `model_`)
             for task_idx, (task_data, task_labels) in enumerate(zip(datas, labels)):
                 task_loader = cebra.data.Loader(task_data, task_labels, batch_size=len(task_data))  # DataLoader for the task
@@ -30,7 +36,7 @@ class MAMLSolver:
                 
                 # Make a copy of the model for the inner-loop updates
                 model_copy = copy.deepcopy(task_model)
-                inner_optimizer = SGD(model_copy.parameters(), lr=maml_lr)  # Use SGD for inner-loop updates
+                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)  # Use SGD for inner-loop updates
                 
                 # Perform inner-loop training (gradient update per task)
                 for batch in task_loader:
@@ -42,23 +48,24 @@ class MAMLSolver:
                 # Compute the task-specific meta-loss (evaluate model_copy)
                 task_meta_loss = self._meta_loss(task_loader, model_copy)
                 meta_loss += task_meta_loss  # Add to the total meta-loss for this epoch
-
+    
             # Average the meta-loss across all tasks (outer loop)
             meta_loss /= len(datas)  # Average meta-loss over tasks
             meta_loss.backward()  # Backpropagate the meta-loss
-            self.optimizer.step()  # Update the model based on the meta-loss
+            meta_optimizer.step()  # Update the model based on the meta-loss
             
             print(f"Meta Loss: {meta_loss.item():.6f}")
-
-            # Save model periodically
+    
+            # Optionally, save the model at regular intervals
             if save_frequency and epoch % save_frequency == 0:
                 self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
             
             if decode:
                 self.decode_history.append(self.decoding(datas, labels))
-
+    
         # Final model save
         self.save(logdir, "checkpoint_final.pth")
+
 
     def step(self, batch, model=None):
         """Perform a single gradient update for MAML."""
