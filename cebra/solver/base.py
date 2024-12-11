@@ -169,7 +169,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         save_hook: Callable[[int, "Solver"], None] = None,
     ):
         """Train model for the specified number of steps.
-
+    
         Args:
             loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
                 Each batch contains reference, positive and negative input samples.
@@ -180,19 +180,23 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             logdir:  The logging directory for writing model checkpoints. The checkpoints
                 can be read again using the `solver.load` function, or manually via loading the
                 state dict.
-
+    
         TODO:
             * Refine the API here. Drop the validation entirely, and implement this via a hook?
         """
-
+    
         self.to(loader.device)
-
+    
         iterator = self._get_loader(loader)
         self.model.train()
         for num_steps, batch in iterator:
             stats = self.step(batch)
             iterator.set_description(stats)
-
+    
+            # NEW: Log loss every 50 steps
+            if num_steps % 50 == 0:
+                print(f"Step {num_steps}: Loss = {stats['total']:.6f}")
+    
             if save_frequency is None:
                 continue
             save_model = num_steps % save_frequency == 0
