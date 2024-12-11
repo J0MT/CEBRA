@@ -3,13 +3,57 @@ import copy
 from torch.optim import Adam
 from cebra import CEBRA
 from cebra.solver import Solver  # Import Solver if needed
+import numpy as np
+
+def preprocess_data(data, max_length=None, target_num_channels=120):
+    """
+    Preprocesses the data to ensure that it has a consistent length and number of channels.
+    """
+    if isinstance(data, np.ndarray):
+        data = torch.tensor(data)
+
+    # Padding or truncating the time dimension to max_length
+    if max_length is not None:
+        if data.shape[0] < max_length:
+            padding = max_length - data.shape[0]
+            data = torch.cat([data, torch.zeros(padding, data.shape[1])], dim=0)
+        else:
+            data = data[:max_length, :]
+
+    # Padding or downsampling channels to target_num_channels
+    num_channels = data.shape[1]
+    if num_channels < target_num_channels:
+        padding = target_num_channels - num_channels
+        data = torch.cat([data, torch.zeros(data.shape[0], padding)], dim=1)
+    elif num_channels > target_num_channels:
+        step = num_channels // target_num_channels
+        data = data[:, ::step]
+
+    return data
 
 class CustomBatch:
-    def __init__(self, data, labels):
-        # Ensure data and labels are of type float32
-        self.reference = torch.tensor(data, dtype=torch.float32)  # Data used for training
-        self.positive = torch.tensor(labels, dtype=torch.float32)  # Labels used for training
-        self.negative = torch.zeros_like(self.positive, dtype=torch.float32)  # Placeholder for negative samples
+    def __init__(self, data, labels, max_length=None, target_num_channels=120):
+        self.reference = preprocess_data(data, max_length, target_num_channels)
+        self.positive = torch.tensor(labels)  
+        self.negative = torch.zeros_like(self.positive)  
+
+class CustomLoader:
+    def __init__(self, data, labels, batch_size, max_length=None, target_num_channels=120):
+        self.data = data
+        self.labels = labels
+        self.batch_size = batch_size
+        self.max_length = max_length
+        self.target_num_channels = target_num_channels
+
+    def __iter__(self):
+        for i in range(0, len(self.data), self.batch_size):
+            batch_data = self.data[i:i + self.batch_size]
+            batch_labels = self.labels[i:i + self.batch_size]
+            yield CustomBatch(batch_data, batch_labels, self.max_length, self.target_num_channels)
+
+    def get_indices(self):
+        return torch.arange(len(self.data))
+
 
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
@@ -101,23 +145,4 @@ class MAMLSolver(Solver):
                 batch.negative,
             )
         return loss
-
-
-class CustomLoader:
-    def __init__(self, data, labels, batch_size):
-        self.data = data
-        self.labels = labels
-        self.batch_size = batch_size
-        self.index = torch.arange(len(data))
-
-    def __iter__(self):
-        # Yield a CustomBatch object for each batch
-        for i in range(0, len(self.data), self.batch_size):
-            batch_data = self.data[i:i + self.batch_size]
-            batch_labels = self.labels[i:i + self.batch_size]
-            yield CustomBatch(batch_data, batch_labels)  # Yield CustomBatch object
-
-    def get_indices(self):
-        return self.index
-
 
