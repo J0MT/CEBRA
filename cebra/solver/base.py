@@ -50,11 +50,13 @@ from cebra.solver.util import ProgressBar
 class BaseSolver(abc.ABC):
     """Abstract Base Solver class for CEBRA solvers."""
 
-    def __init__(self):
-        self.current_step = 0  # Step counter for all solvers
+    def __init__(self, **kwargs):
+        # Extract known arguments or set defaults
+        self.current_step = 0  # Step counter
         self.logger_hook = None  # Optional external logger hook
-        self.tqdm_on = kwargs.get("tqdm_on", True)  # Optional progress bar control
-        # Handle any unused arguments (prevents errors)
+        self.tqdm_on = kwargs.pop("tqdm_on", True)  # Default to True for progress bar
+
+        # Warn if any unused arguments remain in kwargs
         if kwargs:
             print(f"Warning: Unused arguments passed to BaseSolver: {kwargs}")
         
