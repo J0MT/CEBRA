@@ -43,7 +43,7 @@ class MAMLSolver(Solver):
 
                 # Inner loop: perform task-specific updates
                 for batch_data, batch_labels in task_loader:
-                    stats = self.step(batch_data, batch_labels, model=model_copy)  # Call step function for gradient update
+                    stats = self.step(batch_data, batch_labels)  # No need to pass 'model' explicitly
                     loss = stats['total']
                     inner_optimizer.zero_grad()
                     loss.backward()  # Backpropagate the loss for this task
