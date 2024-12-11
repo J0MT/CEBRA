@@ -167,6 +167,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         inner_lr: float = 0.01,
         save_frequency: int = None,
         valid_frequency: int = None,
+        decode: bool = False,  # Add decode flag
         logdir: str = None,
         save_hook: Callable[[int, "Solver"], None] = None,
     ):
@@ -210,9 +211,30 @@ class Solver(abc.ABC, cebra.io.HasDevice):
 
             # Save checkpoints
             if save_frequency and num_steps % save_frequency == 0:
+                # Decoding functionality
+                if decode:
+                    print(f"Running decoding at step {num_steps}...")
+                    self.decode_history.append(
+                        self.decoding(loader, valid_loader)
+                    )
+
+                # Call save hook if provided
+                if save_hook is not None:
+                    save_hook(num_steps, self)
+
+                # Save the checkpoint
                 self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
 
+            # Run validation
+            if valid_frequency and num_steps % valid_frequency == 0 and valid_loader is not None:
+                validation_loss = self.validation(valid_loader)
+                print(f"Validation Loss at step {num_steps}: {validation_loss}")
+                if self.best_loss is None or validation_loss < self.best_loss:
+                    self.best_loss = validation_loss
+                    self.save(logdir, "checkpoint_best.pth")
+
         return fine_tuning_losses  # Return the list of losses
+
                         
                             
 
