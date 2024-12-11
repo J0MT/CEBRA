@@ -7,23 +7,21 @@ from cebra.solver import Solver  # Import Solver if needed
 
 class CustomBatch:
     def __init__(self, data, labels):
-        # Create a CustomBatch from the data and labels
-        self.reference = torch.tensor(data)  # Reference data
-        self.positive = torch.tensor(labels)  # Labels (positive samples)
-        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples, adjust if needed
+        # Wrap data and labels as tensors with attributes
+        self.reference = torch.tensor(data)  # Data used for training
+        self.positive = torch.tensor(labels)  # Labels used for training
+        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples
+
 
 
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
-    def _inference(self, batch):
-        """Implement the forward pass for MAML, given a batch of data."""
-        return self.model(batch.reference)  # Forward pass using reference data
-
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
-        self.to("cuda" if torch.cuda.is_available() else "cpu")  # Move to GPU if available
-        self.model.train()  # Set the model to training mode
+        # Move model to the appropriate device
+        self.to("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.train()  # Set the model in training mode
         
         meta_optimizer = self.optimizer  # Use the outer-loop optimizer
 
@@ -45,12 +43,7 @@ class MAMLSolver(Solver):
 
                 # Inner loop: perform task-specific updates
                 for batch in task_loader:
-                    # Access batch.reference and batch.positive
-                    batch_data = batch.reference
-                    batch_labels = batch.positive
-                    
-                    # Perform a gradient update for this batch
-                    stats = self.step(batch_data, batch_labels)  # No need to pass 'model' explicitly
+                    stats = self.step(batch)  # Call step function for gradient update
                     loss = stats['total']
                     inner_optimizer.zero_grad()
                     loss.backward()  # Backpropagate the loss for this task
@@ -78,14 +71,13 @@ class MAMLSolver(Solver):
         # Optionally save the model after training
         self.save(logdir, f"checkpoint_final.pth")
 
-    def step(self, batch, model=None):
+    def step(self, batch):
         """Perform a single gradient update on the model"""
-        if model is None:
-            model = self.model
-
         self.optimizer.zero_grad()
-        prediction = self._inference(batch)  # Use the batch with .reference
-        loss, align, uniform = self.criterion(prediction, batch.positive, batch.negative)
+        prediction = self._inference(batch)  # This uses batch.reference, batch.positive, etc.
+        loss, align, uniform = self.criterion(prediction.reference,
+                                              prediction.positive,
+                                              prediction.negative)
         loss.backward()
         self.optimizer.step()
 
@@ -109,21 +101,6 @@ class MAMLSolver(Solver):
             )
         return loss
 
-    def save(self, logdir, filename="checkpoint_last.pth"):
-        """Save the model state"""
-        if not os.path.exists(logdir):
-            os.makedirs(logdir)
-        savepath = os.path.join(logdir, filename)
-        torch.save(self.state_dict(), savepath)
-
-    def state_dict(self):
-        """Return the state of the solver"""
-        return {
-            "model": self.model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "loss": torch.tensor(self.history),
-            "log": self.log,
-        }
 
 class CustomLoader:
     def __init__(self, data, labels, batch_size):
@@ -133,13 +110,14 @@ class CustomLoader:
         self.index = torch.arange(len(data))
 
     def __iter__(self):
+        # Yield a CustomBatch object for each batch
         for i in range(0, len(self.data), self.batch_size):
             batch_data = self.data[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
-            # Yield CustomBatch object, which has reference, positive, and negative attributes
-            yield CustomBatch(batch_data, batch_labels)
+            yield CustomBatch(batch_data, batch_labels)  # Yield CustomBatch object
 
     def get_indices(self):
         return self.index
+
 
 
