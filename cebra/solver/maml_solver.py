@@ -1,72 +1,31 @@
 import torch
 import copy
-from torch.optim import Adam
 from cebra import CEBRA
+from torch.optim import Adam
 from cebra.solver import Solver  # Import Solver if needed
-import numpy as np
 
-# Define the CustomBatch class to hold the processed data
+# Define the device to be used (GPU if available, else CPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class CustomBatch:
-    def __init__(self, data, labels, max_length=None, target_num_channels=120):
-        self.reference = self.preprocess_data(data, max_length, target_num_channels)
-        self.positive = torch.tensor(labels)
-        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples
-
-    def preprocess_data(self, data, max_length=None, target_num_channels=120):
-        """Preprocess the data to have consistent shape (padding, truncating, downsampling)."""
-        if isinstance(data, np.ndarray):
-            data = torch.tensor(data)
-        
-        # Padding or truncating the time dimension to max_length
-        if max_length is not None:
-            if data.shape[0] < max_length:
-                padding = max_length - data.shape[0]
-                data = torch.cat([data, torch.zeros(padding, data.shape[1])], dim=0)
-            else:
-                data = data[:max_length, :]
-
-        # Padding or downsampling channels to target_num_channels
-        num_channels = data.shape[1]
-        if num_channels < target_num_channels:
-            padding = target_num_channels - num_channels
-            data = torch.cat([data, torch.zeros(data.shape[0], padding)], dim=1)
-        elif num_channels > target_num_channels:
-            step = num_channels // target_num_channels
-            data = data[:, ::step]
-
-        return data
-
-# Define the CustomLoader class to handle data batching
-class CustomLoader:
-    def __init__(self, data, labels, batch_size, max_length=None, target_num_channels=120):
-        self.data = data
-        self.labels = labels
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.target_num_channels = target_num_channels
-
-    def __iter__(self):
-        # Yield a CustomBatch object for each batch
-        for i in range(0, len(self.data), self.batch_size):
-            batch_data = self.data[i:i + self.batch_size]
-            batch_labels = self.labels[i:i + self.batch_size]
-            yield CustomBatch(batch_data, batch_labels, self.max_length, self.target_num_channels)
-
-    def get_indices(self):
-        return torch.arange(len(self.data))
-
+    def __init__(self, data, labels, device):
+        # Wrap data and labels as tensors with attributes and move them to the correct device
+        self.reference = torch.tensor(data).to(device)  # Data used for training
+        self.positive = torch.tensor(labels).to(device)  # Labels used for training
+        self.negative = torch.zeros_like(self.positive).to(device)  # Placeholder for negative samples
 
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
     def _inference(self, batch):
-        """Perform the forward pass using the reference data."""
-        return self.model(batch.reference.float())  # Ensure float32 type during inference
+        """Implement the forward pass using the reference data."""
+        # Assuming the model is set up to take batch.reference as input
+        return self.model(batch.reference)  # Perform inference using reference data from the batch
 
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
         # Move model to the appropriate device
-        self.to("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
         self.model.train()  # Set the model in training mode
         
         meta_optimizer = self.optimizer  # Use the outer-loop optimizer
@@ -81,7 +40,7 @@ class MAMLSolver(Solver):
             # Loop over tasks (each task has its own data and labels)
             for task_data, task_labels in zip(datas, labels):
                 # Create a task-specific data loader
-                task_loader = CustomLoader(task_data, task_labels, batch_size=len(task_data))
+                task_loader = CustomLoader(task_data, task_labels, batch_size=len(task_data), device=device)
 
                 # Create a copy of the model for the inner loop
                 model_copy = copy.deepcopy(self.model)
@@ -146,4 +105,27 @@ class MAMLSolver(Solver):
                 batch.negative,
             )
         return loss
+
+
+class CustomLoader:
+    def __init__(self, data, labels, batch_size, device):
+        self.data = data
+        self.labels = labels
+        self.batch_size = batch_size
+        self.index = torch.arange(len(data))
+        self.device = device
+
+    def __iter__(self):
+        # Yield a CustomBatch object for each batch
+        for i in range(0, len(self.data), self.batch_size):
+            batch_data = self.data[i:i + self.batch_size]
+            batch_labels = self.labels[i:i + self.batch_size]
+            # Move batch data to the correct device
+            batch_data = batch_data.to(self.device)
+            batch_labels = batch_labels.to(self.device)
+            yield CustomBatch(batch_data, batch_labels, self.device)  # Pass device to CustomBatch
+
+    def get_indices(self):
+        return self.index
+
 
