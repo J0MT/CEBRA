@@ -53,8 +53,8 @@ class BaseSolver(abc.ABC):
     def __init__(self):
         self.current_step = 0  # Step counter for all solvers
         self.logger_hook = None  # Optional external logger hook
-        self.tqdm_on = True  # Initialize tqdm flag
-
+        self.tqdm_on = kwargs.get("tqdm_on", True)  # Optional progress bar control
+        
     @abc.abstractmethod
     def step(self, batch):
         """Abstract method for performing a single training step."""
@@ -86,12 +86,13 @@ class Solver(BaseSolver, cebra.io.HasDevice):
         tqdm_on: Use ``tqdm`` for showing a progress bar during training.
     """
     def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__(model, criterion, optimizer, **kwargs)  # Initialize BaseSolver attributes
+        super().__init__(**kwargs)  # Pass optional arguments to BaseSolver
         cebra.io.HasDevice.__init__(self)  # Initialize device management
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
         self.history = []  # To store loss values
+        self.decode_history = []  # Deprecated, for compatibility
         self.log = {"pos": [], "neg": [], "total": [], "temperature": []}
         self.best_loss = float("inf")
     
