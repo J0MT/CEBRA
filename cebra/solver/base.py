@@ -46,6 +46,26 @@ from cebra.solver.util import ProgressBar
 
 
 @dataclasses.dataclass
+
+class BaseSolver(abc.ABC):
+    """Abstract Base Solver class for CEBRA solvers."""
+
+    def __init__(self):
+        self.current_step = 0  # Step counter for all solvers
+        self.logger_hook = None  # Optional external logger hook
+
+    @abc.abstractmethod
+    def step(self, batch):
+        """Abstract method for performing a single training step."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _inference(self, batch):
+        """Abstract method for model inference."""
+        raise NotImplementedError
+
+
+
 class Solver(abc.ABC, cebra.io.HasDevice):
     """Solver base class.
 
@@ -64,20 +84,17 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             criterions in CEBRA, also contains the value of the ``temperature``.
         tqdm_on: Use ``tqdm`` for showing a progress bar during training.
     """
-
-    model: torch.nn.Module
-    criterion: torch.nn.Module
-    optimizer: torch.optim.Optimizer
-    history: List = dataclasses.field(default_factory=list)
-    decode_history: List = dataclasses.field(default_factory=list)
-    log: Dict = dataclasses.field(default_factory=lambda: ({
-        "pos": [],
-        "neg": [],
-        "total": [],
-        "temperature": []
-    }))
-    tqdm_on: bool = True
-
+    def __init__(self, model, criterion, optimizer, **kwargs):
+        super().__init__()  # Initialize BaseSolver attributes
+        cebra.io.HasDevice.__init__(self)  # Initialize device management
+        self.model = model
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.history = []  # To store loss values
+        self.log = {"pos": [], "neg": [], "total": [], "temperature": []}
+        self.best_loss = float("inf")
+    
+        
     def __post_init__(self):
         cebra.io.HasDevice.__init__(self)
         self.best_loss = float("inf")
@@ -222,43 +239,39 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             
 
     def step(self, batch: cebra.data.Batch) -> dict:
-            """Perform a single gradient update and log the loss.
-        
-            Args:
-                batch: The input samples.
-        
-            Returns:
-                Dictionary containing training metrics.
-            """
-            self.optimizer.zero_grad()
-            prediction = self._inference(batch)
-            loss, align, uniform = self.criterion(
-                prediction.reference,
-                prediction.positive,
-                prediction.negative
-            )
-        
-            loss.backward()
-            self.optimizer.step()
-            self.history.append(loss.item())  # Log loss to history
-        
-            # Logging statistics
-            stats = dict(
-                pos=align.item(),
-                neg=uniform.item(),
-                total=loss.item(),
-                temperature=self.criterion.temperature,
-            )
-            for key, value in stats.items():
-                self.log[key].append(value)
-        
-            # Add external logging (e.g., TensorBoard or custom logger hook)
-            if hasattr(self, "logger_hook") and self.logger_hook is not None:
-                self.logger_hook(num_steps=self.current_step, solver=self)
-        
-            # Increment current step
-            self.current_step += 1
-            return stats
+        """Perform a single gradient update and log training metrics."""
+        self.optimizer.zero_grad()
+        prediction = self._inference(batch)
+        loss, align, uniform = self.criterion(
+            prediction.reference,
+            prediction.positive,
+            prediction.negative,
+        )
+
+        loss.backward()
+        self.optimizer.step()
+        self.history.append(loss.item())
+
+        # Log training statistics
+        stats = dict(
+            pos=align.item(),
+            neg=uniform.item(),
+            total=loss.item(),
+            temperature=self.criterion.temperature,
+        )
+        for key, value in stats.items():
+            self.log[key].append(value)
+
+        # Increment step counter and call logger hook if defined
+        self.current_step += 1
+        if self.logger_hook:
+            self.logger_hook(num_steps=self.current_step, solver=self)
+
+        return stats
+
+    def _inference(self, batch: cebra.data.Batch) -> cebra.data.Batch:
+        """Perform inference using the model."""
+        return self.model(batch)
 
 
     def validation(self,
@@ -393,6 +406,15 @@ class MultiobjectiveSolver(Solver):
     renormalize_features: bool = False
     output_mode: Literal["overlapping", "separate"] = "overlapping"
 
+    def __init__(self, model, criterion, optimizer, **kwargs):
+        super().__init__(model, criterion, optimizer, **kwargs)
+        self._check_dimensions()
+        self.model = cebra.models.MultiobjectiveModel(
+            model,
+            dimensions=(self.num_behavior_features, model.num_output),
+            renormalize=self.renormalize_features,
+            output_mode=self.output_mode,
+        )
     @property
     def num_time_features(self):
         return self.num_total_features - self.num_behavior_features
