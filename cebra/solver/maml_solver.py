@@ -5,68 +5,65 @@ from torch.optim import SGD
 from cebra import CEBRA
 from torch import optim
 
-class MAMLSolver:
-    """Custom MAML Solver for CEBRA"""
-    
-    def __init__(self, model, criterion, optimizer, *args, **kwargs):
-        self.model = model
-        self.criterion = criterion
-        self.optimizer = optimizer
-        # Initialize other attributes if needed
+import copy
+import torch
+from torch.optim import Adam
+from cebra.solver import Solver  # Or import your custom solver if applicable
 
+class MAMLSolver(Solver):
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
-        """MAML Training loop integrated with CEBRA"""
+        """MAML training loop integrated with CEBRA's Solver."""
         
-        # Move model to the appropriate device (CPU or GPU)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model.to(device)  # Ensure model is on the correct device
-        self.model.train()  # Set the model to training mode
-
+        # Move model to the appropriate device
+        self.to("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.train()  # Set the model in training mode
+        
         meta_optimizer = self.optimizer  # Use the outer-loop optimizer
 
-        # Loop over MAML epochs (outer loop)
+        # Outer loop (MAML) iteration
         for epoch in range(1, maml_steps + 1):
             print(f"Epoch {epoch}: MAML Training")
-            meta_optimizer.zero_grad()  # Reset outer optimizer
+            meta_optimizer.zero_grad()  # Reset outer loop optimizer
             
-            meta_loss = 0.0  # Initialize meta-loss
-            
-            # Loop over tasks (rat data)
+            meta_loss = 0.0  # Initialize meta-loss for this epoch
+
+            # Loop over tasks (each task has its own data and labels)
             for task_data, task_labels in zip(datas, labels):
-                task_loader = cebra.data.Loader(task_data, task_labels, batch_size=len(task_data))  # Create task loader
+                # Create a task-specific data loader
+                task_loader = CustomLoader(task_data, task_labels, batch_size=len(task_data))
 
                 # Create a copy of the model for the inner loop
                 model_copy = copy.deepcopy(self.model)
                 inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
 
-                # Inner loop: perform task-specific gradient updates
-                for batch in task_loader:
-                    stats = self.step(batch, model=model_copy)  # Perform gradient update on model_copy
+                # Inner loop: perform task-specific updates
+                for batch_data, batch_labels in task_loader:
+                    stats = self.step(batch_data, batch_labels, model=model_copy)  # Call step function for gradient update
                     loss = stats['total']
                     inner_optimizer.zero_grad()
-                    loss.backward()  # Backpropagate loss for the current task
+                    loss.backward()  # Backpropagate the loss for this task
                     inner_optimizer.step()
 
-                # Compute meta-loss for the current task
+                # Compute the meta-loss for this task
                 task_meta_loss = self._meta_loss(task_loader, model_copy)
-                meta_loss += task_meta_loss
+                meta_loss += task_meta_loss  # Add task meta-loss to the total meta-loss
 
-            # Average the meta-loss across tasks
-            meta_loss /= len(datas)
-            meta_loss.backward()  # Backpropagate the total meta-loss
-            meta_optimizer.step()  # Update model using meta-gradient
+            # Average meta-loss across all tasks (for the outer loop)
+            meta_loss /= len(datas)  # Average loss over tasks
+            meta_loss.backward()  # Backpropagate the meta-loss
+            meta_optimizer.step()  # Update the model based on the meta-loss
 
             print(f"Meta Loss: {meta_loss.item():.6f}")
-            
-            # Optionally save the model at regular intervals
+
+            # Optionally, save the model at regular intervals
             if save_frequency is not None and epoch % save_frequency == 0:
                 self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
 
-            # Optionally perform decoding or additional saving
+            # Perform decoding or additional saving
             if decode:
                 self.decode_history.append(self.decoding(datas, labels))
 
-        # Save final model checkpoint
+        # Optionally save the model after training
         self.save(logdir, f"checkpoint_final.pth")
 
     def step(self, batch, model=None):
@@ -118,3 +115,21 @@ class MAMLSolver:
             "log": self.log,
         }
 
+import torch
+from cebra.data import Loader
+
+class CustomLoader(Loader):
+    def __init__(self, data, labels, batch_size):
+        self.data = data
+        self.labels = labels
+        self.batch_size = batch_size
+        self.index = torch.arange(len(data))
+
+    def __iter__(self):
+        for i in range(0, len(self.data), self.batch_size):
+            batch_data = self.data[i:i + self.batch_size]
+            batch_labels = self.labels[i:i + self.batch_size]
+            yield batch_data, batch_labels
+
+    def get_indices(self):
+        return self.index
