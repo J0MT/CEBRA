@@ -16,6 +16,11 @@ class CustomBatch:
 
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
+     def _inference(self, batch):
+        """Perform the forward pass using the reference data."""
+        # Assuming the model is set up to take batch.reference as input
+        return self.model(batch.reference)  # Perform inference using reference data from the batch
+         
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
@@ -70,7 +75,7 @@ class MAMLSolver(Solver):
 
         # Optionally save the model after training
         self.save(logdir, f"checkpoint_final.pth")
-
+        
     def step(self, batch):
         """Perform a single gradient update on the model"""
         self.optimizer.zero_grad()
