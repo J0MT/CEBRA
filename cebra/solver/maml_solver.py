@@ -5,38 +5,38 @@ from cebra import CEBRA
 from cebra.solver import Solver  # Import Solver if needed
 import numpy as np
 
-def preprocess_data(data, max_length=None, target_num_channels=120):
-    """
-    Preprocesses the data to ensure that it has a consistent length and number of channels.
-    """
-    if isinstance(data, np.ndarray):
-        data = torch.tensor(data)
-
-    # Padding or truncating the time dimension to max_length
-    if max_length is not None:
-        if data.shape[0] < max_length:
-            padding = max_length - data.shape[0]
-            data = torch.cat([data, torch.zeros(padding, data.shape[1])], dim=0)
-        else:
-            data = data[:max_length, :]
-
-    # Padding or downsampling channels to target_num_channels
-    num_channels = data.shape[1]
-    if num_channels < target_num_channels:
-        padding = target_num_channels - num_channels
-        data = torch.cat([data, torch.zeros(data.shape[0], padding)], dim=1)
-    elif num_channels > target_num_channels:
-        step = num_channels // target_num_channels
-        data = data[:, ::step]
-
-    return data
-
+# Define the CustomBatch class to hold the processed data
 class CustomBatch:
     def __init__(self, data, labels, max_length=None, target_num_channels=120):
-        self.reference = preprocess_data(data, max_length, target_num_channels)
-        self.positive = torch.tensor(labels)  
-        self.negative = torch.zeros_like(self.positive)  
+        self.reference = self.preprocess_data(data, max_length, target_num_channels)
+        self.positive = torch.tensor(labels)
+        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples
 
+    def preprocess_data(self, data, max_length=None, target_num_channels=120):
+        """Preprocess the data to have consistent shape (padding, truncating, downsampling)."""
+        if isinstance(data, np.ndarray):
+            data = torch.tensor(data)
+        
+        # Padding or truncating the time dimension to max_length
+        if max_length is not None:
+            if data.shape[0] < max_length:
+                padding = max_length - data.shape[0]
+                data = torch.cat([data, torch.zeros(padding, data.shape[1])], dim=0)
+            else:
+                data = data[:max_length, :]
+
+        # Padding or downsampling channels to target_num_channels
+        num_channels = data.shape[1]
+        if num_channels < target_num_channels:
+            padding = target_num_channels - num_channels
+            data = torch.cat([data, torch.zeros(data.shape[0], padding)], dim=1)
+        elif num_channels > target_num_channels:
+            step = num_channels // target_num_channels
+            data = data[:, ::step]
+
+        return data
+
+# Define the CustomLoader class to handle data batching
 class CustomLoader:
     def __init__(self, data, labels, batch_size, max_length=None, target_num_channels=120):
         self.data = data
@@ -46,6 +46,7 @@ class CustomLoader:
         self.target_num_channels = target_num_channels
 
     def __iter__(self):
+        # Yield a CustomBatch object for each batch
         for i in range(0, len(self.data), self.batch_size):
             batch_data = self.data[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
