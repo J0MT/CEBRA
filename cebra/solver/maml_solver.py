@@ -2,130 +2,90 @@ import torch
 import copy
 from cebra import CEBRA
 from torch.optim import Adam
-from cebra.solver import Solver  # Import Solver if needed
+from cebra.solver import Solver
 
-# Define the device to be used (GPU if available, else CPU)
+# Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Custom Batch Class
 class CustomBatch:
     def __init__(self, data, labels, device):
-        # Wrap data and labels as tensors with attributes and move them to the correct device
-        self.reference = torch.tensor(data).to(device)  # Data used for training
-        self.positive = torch.tensor(labels).to(device)  # Labels used for training
-        self.negative = torch.zeros_like(self.positive).to(device)  # Placeholder for negative samples
+        self.reference = torch.tensor(data).to(device)
+        self.positive = torch.tensor(labels).to(device)
+        self.negative = torch.zeros_like(self.positive).to(device)
 
-# Define the MAMLSolver class which inherits from Solver
-class MAMLSolver(Solver):
-    def _inference(self, batch):
-        """Implement the forward pass using the reference data."""
-        # Assuming the model is set up to take batch.reference as input
-        return self.model(batch.reference)  # Perform inference using reference data from the batch
-
-    def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
-        """MAML training loop integrated with CEBRA's Solver."""
-        
-        # Move model to the appropriate device
-        self.to(device)
-        self.model.train()  # Set the model in training mode
-        
-        meta_optimizer = self.optimizer  # Use the outer-loop optimizer
-
-        # Outer loop (MAML) iteration
-        for epoch in range(1, maml_steps + 1):
-            print(f"Epoch {epoch}: MAML Training")
-            meta_optimizer.zero_grad()  # Reset outer loop optimizer
-            
-            meta_loss = 0.0  # Initialize meta-loss for this epoch
-
-            # Loop over tasks (each task has its own data and labels)
-            for task_data, task_labels in zip(datas, labels):
-                # Create a task-specific data loader
-                task_loader = CustomLoader(task_data, task_labels, batch_size=len(task_data), device=device)
-
-                # Create a copy of the model for the inner loop
-                model_copy = copy.deepcopy(self.model)
-                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
-
-                # Inner loop: perform task-specific updates
-                for batch in task_loader:
-                    stats = self.step(batch)  # Call step function for gradient update
-                    loss = stats['total']
-                    inner_optimizer.zero_grad()
-                    loss.backward()  # Backpropagate the loss for this task
-                    inner_optimizer.step()
-
-                # Compute the meta-loss for this task
-                task_meta_loss = self._meta_loss(task_loader, model_copy)
-                meta_loss += task_meta_loss  # Add task meta-loss to the total meta-loss
-
-            # Average meta-loss across all tasks (for the outer loop)
-            meta_loss /= len(datas)  # Average loss over tasks
-            meta_loss.backward()  # Backpropagate the meta-loss
-            meta_optimizer.step()  # Update the model based on the meta-loss
-
-            print(f"Meta Loss: {meta_loss.item():.6f}")
-
-            # Optionally, save the model at regular intervals
-            if save_frequency is not None and epoch % save_frequency == 0:
-                self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
-
-            # Perform decoding or additional saving
-            if decode:
-                self.decode_history.append(self.decoding(datas, labels))
-
-        # Optionally save the model after training
-        self.save(logdir, f"checkpoint_final.pth")
-        
-    def step(self, batch):
-        """Perform a single gradient update on the model"""
-        self.optimizer.zero_grad()
-        prediction = self._inference(batch)  # This uses batch.reference, batch.positive, etc.
-        loss, align, uniform = self.criterion(prediction.reference,
-                                              prediction.positive,
-                                              prediction.negative)
-        loss.backward()
-        self.optimizer.step()
-
-        stats = dict(
-            pos=align.item(),
-            neg=uniform.item(),
-            total=loss.item(),
-            temperature=self.criterion.temperature,
-        )
-        return stats
-
-    def _meta_loss(self, batch, model):
-        """Compute the meta-loss for the updated model"""
-        model.eval()
-        with torch.no_grad():
-            prediction = model(batch.reference)  # Forward pass
-            loss, _, _ = self.criterion(
-                prediction,
-                batch.positive,
-                batch.negative,
-            )
-        return loss
-
-
+# Custom Data Loader
 class CustomLoader:
     def __init__(self, data, labels, batch_size, device):
         self.data = data
         self.labels = labels
         self.batch_size = batch_size
-        self.index = torch.arange(len(data))
         self.device = device
 
     def __iter__(self):
-        # Yield a CustomBatch object for each batch
         for i in range(0, len(self.data), self.batch_size):
             batch_data = self.data[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
-            # Move batch data to the correct device
-            batch_data = batch_data.to(self.device)
-            batch_labels = batch_labels.to(self.device)
-            yield CustomBatch(batch_data, batch_labels, self.device)  # Pass device to CustomBatch
+            yield CustomBatch(batch_data, batch_labels, self.device)
 
-    def get_indices(self):
-        return self.index
+# MAML Solver Implementation
+class MAMLSolver(Solver):
+    def _inference(self, batch):
+        return self.model(batch.reference)
 
+    def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=500, logdir="./checkpoints"):
+        self.to(device)
+        self.model.train()
+        meta_optimizer = self.optimizer
+
+        for epoch in range(1, maml_steps + 1):
+            print(f"Epoch {epoch}: MAML Training")
+            meta_optimizer.zero_grad()
+            meta_loss = 0.0
+
+            for task_data, task_labels in zip(datas, labels):
+                task_loader = CustomLoader(task_data, task_labels, batch_size=len(task_data), device=device)
+                model_copy = copy.deepcopy(self.model)
+                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
+
+                for batch in task_loader:
+                    stats = self.step(batch)
+                    loss = stats['total']
+                    inner_optimizer.zero_grad()
+                    loss.backward()
+                    inner_optimizer.step()
+
+                task_meta_loss = self._meta_loss(task_loader, model_copy)
+                meta_loss += task_meta_loss
+
+            meta_loss /= len(datas)
+            meta_loss.backward()
+            meta_optimizer.step()
+
+            print(f"Meta Loss: {meta_loss.item():.6f}")
+            if save_frequency and epoch % save_frequency == 0:
+                self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
+        self.save(logdir, "checkpoint_final.pth")
+
+    def step(self, batch):
+        self.optimizer.zero_grad()
+        prediction = self._inference(batch)
+        loss, align, uniform = self.criterion(
+            prediction.reference, prediction.positive, prediction.negative
+        )
+        loss.backward()
+        self.optimizer.step()
+
+        stats = dict(pos=align.item(), neg=uniform.item(), total=loss.item())
+        return stats
+
+    def _meta_loss(self, loader, model):
+        model.eval()
+        with torch.no_grad():
+            for batch in loader:
+                prediction = model(batch.reference)
+                loss, _, _ = self.criterion(
+                    prediction, batch.positive, batch.negative
+                )
+        return loss
 
