@@ -1,4 +1,4 @@
-#
+
 # CEBRA: Consistent EmBeddings of high-dimensional Recordings using Auxiliary variables
 # © Mackenzie W. Mathis & Steffen Schneider (v0.4.0+)
 # Source code:
@@ -46,33 +46,7 @@ from cebra.solver.util import ProgressBar
 
 
 @dataclasses.dataclass
-
-class BaseSolver(abc.ABC):
-    """Abstract Base Solver class for CEBRA solvers."""
-
-    def __init__(self, **kwargs):
-        # Extract known arguments or set defaults
-        self.current_step = 0  # Step counter
-        self.logger_hook = None  # Optional external logger hook
-        self.tqdm_on = kwargs.pop("tqdm_on", True)  # Default to True for progress bar
-
-        # Warn if any unused arguments remain in kwargs
-        if kwargs:
-            print(f"Warning: Unused arguments passed to BaseSolver: {kwargs}")
-        
-    @abc.abstractmethod
-    def step(self, batch):
-        """Abstract method for performing a single training step."""
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def _inference(self, batch):
-        """Abstract method for model inference."""
-        raise NotImplementedError
-
-
-
-class Solver(BaseSolver, cebra.io.HasDevice):
+class Solver(abc.ABC, cebra.io.HasDevice):
     """Solver base class.
 
     A solver contains helper methods for bundling a model, criterion and optimizer.
@@ -90,19 +64,20 @@ class Solver(BaseSolver, cebra.io.HasDevice):
             criterions in CEBRA, also contains the value of the ``temperature``.
         tqdm_on: Use ``tqdm`` for showing a progress bar during training.
     """
-    def __init__(self, model, criterion, optimizer, device: str = "cpu", **kwargs):
-        super().__init__(**kwargs)  # Initialize BaseSolver
-        cebra.io.HasDevice.__init__(self)  # Initialize device management
-        self._device = device  # Explicitly set the device
-        self.model = model.to(self._device)  # Move model to device
-        self.criterion = criterion
-        self.optimizer = optimizer
-        self.history = []
-        self.decode_history = []
-        self.log = {"pos": [], "neg": [], "total": [], "temperature": []}
-        self.best_loss = float("inf")
-    
-        
+
+    model: torch.nn.Module
+    criterion: torch.nn.Module
+    optimizer: torch.optim.Optimizer
+    history: List = dataclasses.field(default_factory=list)
+    decode_history: List = dataclasses.field(default_factory=list)
+    log: Dict = dataclasses.field(default_factory=lambda: ({
+        "pos": [],
+        "neg": [],
+        "total": [],
+        "temperature": []
+    }))
+    tqdm_on: bool = True
+
     def __post_init__(self):
         cebra.io.HasDevice.__init__(self)
         self.best_loss = float("inf")
@@ -183,84 +158,78 @@ class Solver(BaseSolver, cebra.io.HasDevice):
         )
 
     def fit(
-            self,
-            loader: cebra.data.Loader,
-            valid_loader: cebra.data.Loader = None,
-            *,
-            save_frequency: int = None,
-            valid_frequency: int = None,
-            decode: bool = False,
-            logdir: str = None,
-            save_hook: Callable[[int, "Solver"], None] = None,
-        ):
-            """Train model for the specified number of steps.
-    
-            Args:
-                loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
-                    Each batch contains reference, positive and negative input samples.
-                valid_loader: Data loader used for validation of the model.
-                save_frequency: If not `None`, the frequency for automatically saving model checkpoints
-                    to `logdir`.
-                valid_frequency: The frequency for running validation on the ``valid_loader`` instance.
-                logdir:  The logging directory for writing model checkpoints. The checkpoints
-                    can be read again using the `solver.load` function, or manually via loading the
-                    state dict.
-    
-            TODO:
-                * Refine the API here. Drop the validation entirely, and implement this via a hook?
-            """
-    
-            self.to(loader.device)
-    
-            iterator = self._get_loader(loader)
-            self.model.train()
-            for num_steps, batch in iterator:
-                stats = self.step(batch)
-                iterator.set_description(stats)
-    
-                if save_frequency is None:
-                    continue
-                save_model = num_steps % save_frequency == 0
-                run_validation = (valid_loader
-                                  is not None) and (num_steps % valid_frequency
-                                                    == 0)
-                if run_validation:
-                    validation_loss = self.validation(valid_loader)
-                    if self.best_loss is None or validation_loss < self.best_loss:
-                        self.best_loss = validation_loss
-                        self.save(logdir, "checkpoint_best.pth")
-                if save_model:
-                    if decode:
-                        self.decode_history.append(
-                            self.decoding(loader, valid_loader))
-                    if save_hook is not None:
-                        save_hook(num_steps, self)
-                    self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+        self,
+        loader: cebra.data.Loader,
+        valid_loader: cebra.data.Loader = None,
+        *,
+        save_frequency: int = None,
+        valid_frequency: int = None,
+        decode: bool = False,
+        logdir: str = None,
+        save_hook: Callable[[int, "Solver"], None] = None,
+    ):
+        """Train model for the specified number of steps.
 
+        Args:
+            loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
+                Each batch contains reference, positive and negative input samples.
+            valid_loader: Data loader used for validation of the model.
+            save_frequency: If not `None`, the frequency for automatically saving model checkpoints
+                to `logdir`.
+            valid_frequency: The frequency for running validation on the ``valid_loader`` instance.
+            logdir:  The logging directory for writing model checkpoints. The checkpoints
+                can be read again using the `solver.load` function, or manually via loading the
+                state dict.
 
+        TODO:
+            * Refine the API here. Drop the validation entirely, and implement this via a hook?
+        """
 
+        self.to(loader.device)
 
+        iterator = self._get_loader(loader)
+        self.model.train()
+        for num_steps, batch in iterator:
+            stats = self.step(batch)
+            iterator.set_description(stats)
 
-                        
-                            
-
-            
+            if save_frequency is None:
+                continue
+            save_model = num_steps % save_frequency == 0
+            run_validation = (valid_loader
+                              is not None) and (num_steps % valid_frequency
+                                                == 0)
+            if run_validation:
+                validation_loss = self.validation(valid_loader)
+                if self.best_loss is None or validation_loss < self.best_loss:
+                    self.best_loss = validation_loss
+                    self.save(logdir, "checkpoint_best.pth")
+            if save_model:
+                if decode:
+                    self.decode_history.append(
+                        self.decoding(loader, valid_loader))
+                if save_hook is not None:
+                    save_hook(num_steps, self)
+                self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
 
     def step(self, batch: cebra.data.Batch) -> dict:
-        """Perform a single gradient update and log training metrics."""
+        """Perform a single gradient update.
+
+        Args:
+            batch: The input samples
+
+        Returns:
+            Dictionary containing training metrics.
+        """
         self.optimizer.zero_grad()
         prediction = self._inference(batch)
-        loss, align, uniform = self.criterion(
-            prediction.reference,
-            prediction.positive,
-            prediction.negative,
-        )
+        loss, align, uniform = self.criterion(prediction.reference,
+                                              prediction.positive,
+                                              prediction.negative)
 
         loss.backward()
         self.optimizer.step()
         self.history.append(loss.item())
-
-        # Log training statistics
         stats = dict(
             pos=align.item(),
             neg=uniform.item(),
@@ -269,18 +238,7 @@ class Solver(BaseSolver, cebra.io.HasDevice):
         )
         for key, value in stats.items():
             self.log[key].append(value)
-
-        # Increment step counter and call logger hook if defined
-        self.current_step += 1
-        if self.logger_hook:
-            self.logger_hook(num_steps=self.current_step, solver=self)
-
         return stats
-
-    def _inference(self, batch: cebra.data.Batch) -> cebra.data.Batch:
-        """Perform inference using the model."""
-        return self.model(batch)
-
 
     def validation(self,
                    loader: cebra.data.Loader,
@@ -414,15 +372,6 @@ class MultiobjectiveSolver(Solver):
     renormalize_features: bool = False
     output_mode: Literal["overlapping", "separate"] = "overlapping"
 
-    def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__(model, criterion, optimizer, **kwargs)
-        self._check_dimensions()
-        self.model = cebra.models.MultiobjectiveModel(
-            model,
-            dimensions=(self.num_behavior_features, model.num_output),
-            renormalize=self.renormalize_features,
-            output_mode=self.output_mode,
-        )
     @property
     def num_time_features(self):
         return self.num_total_features - self.num_behavior_features
