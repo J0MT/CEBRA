@@ -81,6 +81,8 @@ class Solver(abc.ABC, cebra.io.HasDevice):
     def __post_init__(self):
         cebra.io.HasDevice.__init__(self)
         self.best_loss = float("inf")
+
+    import copy
     def maml_train(self, datas, labels, maml_steps=1, maml_lr=1e-3, save_frequency=None, valid_frequency=None, decode=False, logdir=None):
         """MAML training: Meta-train across tasks (rats)."""
         
