@@ -54,6 +54,9 @@ class BaseSolver(abc.ABC):
         self.current_step = 0  # Step counter for all solvers
         self.logger_hook = None  # Optional external logger hook
         self.tqdm_on = kwargs.get("tqdm_on", True)  # Optional progress bar control
+        # Handle any unused arguments (prevents errors)
+        if kwargs:
+            print(f"Warning: Unused arguments passed to BaseSolver: {kwargs}")
         
     @abc.abstractmethod
     def step(self, batch):
