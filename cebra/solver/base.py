@@ -159,7 +159,8 @@ class Solver(abc.ABC, cebra.io.HasDevice):
 
     def fit(
             self,
-            tasks: list,  # List of pre-split tasks [(data_1, label_1), (data_2, label_2), ...]
+            loader: cebra.data.Loader = None,
+            tasks: list = None,  # List of pre-split tasks [(data_1, label_1), (data_2, label_2), ...]
             *,
             use_maml: bool = False,
             inner_steps: int = 1,
@@ -171,9 +172,10 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             save_hook: Callable[[int, "Solver"], None] = None,
         ):
         """
-        Train model with optional MAML-based meta-learning using pre-split tasks.
+        Train model with optional MAML-based meta-learning using either a data loader or pre-split tasks.
     
         Args:
+            loader: CEBRA data loader for default training.
             tasks: List of pre-split tasks, where each task is (data, labels).
             use_maml: Enable MAML meta-learning.
             inner_steps: Number of inner-loop optimization steps for MAML.
@@ -183,72 +185,95 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             decode: Whether to run decoding logic during checkpoint saving.
             logdir: Directory to save model checkpoints.
             save_hook: Optional function to call during saving.
+    
         Returns:
-            task_losses: A list of average losses for each task.
+            losses: A list of losses recorded during training.
         """
 
-        task_losses = []  # List to store average loss per task
-        self.to("cuda" if torch.cuda.is_available() else "cpu")  # Send model to device
+        losses = []  # List to store average loss per step/task
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)
         self.model.train()
     
-        # Outer Loop: Iterate through tasks
-        for task_index, (task_data, task_labels) in enumerate(tasks):
-            task_data = torch.tensor(task_data).float().to(self.device)
-            task_labels = torch.tensor(task_labels).float().to(self.device)
+        # --- Training Mode 1: Use Loader ---
+        if loader is not None:
+            print("Training with Loader...")
+            iterator = self._get_loader(loader)
     
-            if use_maml:
-                # MAML Training Logic
-                meta_gradients = []
-                task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
-                task_model = copy.deepcopy(self.model)
-    
-                for _ in range(inner_steps):
-                    task_optimizer.zero_grad()
-                    task_predictions = task_model(task_data)
-                    loss = self.criterion(task_predictions, task_labels)  # Compute loss
-                    loss.backward()
-                    task_optimizer.step()
-    
-                # Compute meta-loss for the task
-                task_predictions = task_model(task_data)
-                meta_loss = self.criterion(task_predictions, task_labels)
-                grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
-                meta_gradients.append(grads)
-    
-                # Average gradients and update the global model
-                for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
-                    param.grad = torch.stack(grads).mean(dim=0)
-                self.optimizer.step()
-    
-                # Log loss for this task
-                task_losses.append(meta_loss.item())
-    
-            else:
-                # Default Training Logic (Non-MAML)
+            for num_steps, batch in iterator:
                 self.optimizer.zero_grad()
-                predictions = self.model(task_data)
-                loss = self.criterion(predictions, task_labels)
+                predictions = self.model(batch.reference)
+                loss = self.criterion(predictions, batch.positive)
                 loss.backward()
                 self.optimizer.step()
     
-                # Log loss for this task
-                task_losses.append(loss.item())
+                # Log loss
+                losses.append(loss.item())
     
-            # Save checkpoints
-            if save_frequency and (task_index + 1) % save_frequency == 0:
-                if decode:
-                    print(f"Running decoding at task {task_index + 1}...")
-                    self.decode_history.append(self.decoding(task_data, task_labels))
+                # Checkpoint saving
+                if save_frequency and num_steps % save_frequency == 0:
+                    if decode:
+                        print(f"Running decoding at step {num_steps}...")
+                        self.decode_history.append(self.decoding(loader))
     
-                if save_hook is not None:
-                    save_hook(task_index + 1, self)
+                    if save_hook is not None:
+                        save_hook(num_steps, self)
     
-                self.save(logdir, f"checkpoint_{task_index + 1:#07d}.pth")
+                    self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
     
-            # Print progress
-            print(f"Task {task_index + 1}/{len(tasks)}: Loss = {task_losses[-1]:.4f}")
+                print(f"Step {num_steps}: Loss = {loss.item():.4f}")
     
-        return task_losses  # Return the list of average losses for each task
+        # --- Training Mode 2: Use Tasks ---
+        elif tasks is not None:
+            print("Training with Tasks...")
+            for task_index, (task_data, task_labels) in enumerate(tasks):
+                task_data = torch.tensor(task_data).float().to(self.device)
+                task_labels = torch.tensor(task_labels).float().to(self.device)
+    
+                if use_maml:
+                    # MAML Training Logic
+                    meta_gradients = []
+                    task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
+                    task_model = copy.deepcopy(self.model)
+    
+                    for _ in range(inner_steps):
+                        task_optimizer.zero_grad()
+                        loss = self.criterion(task_model(task_data), task_labels)
+                        loss.backward()
+                        task_optimizer.step()
+    
+                    # Meta-loss computation
+                    meta_loss = self.criterion(task_model(task_data), task_labels)
+                    grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
+                    meta_gradients.append(grads)
+    
+                    for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
+                        param.grad = torch.stack(grads).mean(dim=0)
+                    self.optimizer.step()
+    
+                    losses.append(meta_loss.item())
+    
+                else:
+                    # Default Task Training
+                    self.optimizer.zero_grad()
+                    predictions = self.model(task_data)
+                    loss = self.criterion(predictions, task_labels)
+                    loss.backward()
+                    self.optimizer.step()
+    
+                    losses.append(loss.item())
+    
+                # Save checkpoints
+                if save_frequency and (task_index + 1) % save_frequency == 0:
+                    self.save(logdir, f"checkpoint_task_{task_index + 1:#07d}.pth")
+                    print(f"Checkpoint saved at task {task_index + 1}.")
+    
+                print(f"Task {task_index + 1}/{len(tasks)}: Loss = {losses[-1]:.4f}")
+    
+        else:
+            raise ValueError("Either 'loader' or 'tasks' must be provided for training.")
+    
+        return losses  # Return the list of losses
 
 
 
