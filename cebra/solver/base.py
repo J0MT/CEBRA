@@ -160,7 +160,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
     def fit(
             self,
             loader: cebra.data.Loader = None,  # Standard CEBRA loader
-            tasks: list = None,  # List of pre-split tasks [(data_1, label_1), ...]
+            tasks: list = None,  # List of pre-split tasks [(data, labels), ...]
             valid_loader: cebra.data.Loader = None,  # Optional validation loader
             *,
             save_frequency: int = None,
@@ -187,8 +187,8 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         """
     
         loss_history = []  # Store loss for each step/task
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(self.device)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Correct device handling
+        self.to(device)
         self.model.train()
     
         # --- Mode 1: Standard Loader-Based Training ---
@@ -197,12 +197,17 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             iterator = self._get_loader(loader)
     
             for num_steps, batch in iterator:
+                # Move batch to the correct device
+                batch = batch.to(device)
+    
                 stats = self.step(batch)
                 loss = stats["total"]
                 loss_history.append(loss)  # Track loss
     
-                # Print and save progress
+                # Print progress
                 print(f"Step {num_steps}: Loss = {loss:.4f}")
+    
+                # Save checkpoints
                 if save_frequency and num_steps % save_frequency == 0:
                     if decode:
                         print("Running decoding...")
@@ -223,8 +228,9 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         elif tasks is not None:
             print("Training with Tasks...")
             for task_index, (task_data, task_labels) in enumerate(tasks):
-                task_data = torch.tensor(task_data).float().to(self.device)
-                task_labels = torch.tensor(task_labels).float().to(self.device)
+                # Move data and labels to the correct device
+                task_data = torch.tensor(task_data).float().to(device)
+                task_labels = torch.tensor(task_labels).float().to(device)
     
                 self.optimizer.zero_grad()
                 predictions = self.model(task_data)
@@ -235,6 +241,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
                 loss_history.append(loss.item())  # Track loss
                 print(f"Task {task_index + 1}: Loss = {loss.item():.4f}")
     
+                # Save checkpoints
                 if save_frequency and (task_index + 1) % save_frequency == 0:
                     self.save(logdir, f"checkpoint_task_{task_index + 1:#07d}.pth")
     
@@ -242,6 +249,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             raise ValueError("Either 'loader' or 'tasks' must be provided for training.")
     
         return loss_history  # Return the list of losses
+
 
 
 
