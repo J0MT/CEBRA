@@ -6,18 +6,16 @@ from cebra.solver import Solver  # Import Solver if needed
 
 class CustomBatch:
     def __init__(self, data, labels):
-        # Wrap data and labels as tensors with attributes
-        self.reference = torch.tensor(data)  # Data used for training
-        self.positive = torch.tensor(labels)  # Labels used for training
-        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples
-
+        # Ensure data and labels are of type float32
+        self.reference = torch.tensor(data, dtype=torch.float32)  # Data used for training
+        self.positive = torch.tensor(labels, dtype=torch.float32)  # Labels used for training
+        self.negative = torch.zeros_like(self.positive, dtype=torch.float32)  # Placeholder for negative samples
 
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
     def _inference(self, batch):
         """Perform the forward pass using the reference data."""
-        # Assuming the model is set up to take batch.reference as input
-        return self.model(batch.reference)  # Perform inference using reference data from the batch
+        return self.model(batch.reference.float())  # Ensure float32 type during inference
 
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
