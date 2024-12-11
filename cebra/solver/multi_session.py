@@ -38,9 +38,10 @@ class MultiSessionSolver(abc_.Solver):
     """Multi session training, contrasting pairs of neural data."""
 
     _variant_name = "multi-session"
-    def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__(model, criterion, optimizer, **kwargs)  # Initialize BaseSolver attributes like current_step, logger_hook
-        self.model = model  # Multi-session model (list of models)
+    def __init__(self, model, criterion, optimizer, device: str = "cpu", **kwargs):
+        super().__init__(model, criterion, optimizer, device=device, **kwargs)
+        self._device = device  # Explicitly set the device
+        self.model = [m.to(self._device) for m in model]  # Move all models to device
         self.criterion = criterion
         self.optimizer = optimizer
         self.history = []
