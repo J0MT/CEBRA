@@ -126,6 +126,15 @@ class MAMLSolver(Solver):
         }
 
 # Define CustomLoader to create batches for training
+import torch
+
+class CustomBatch:
+    def __init__(self, data, labels):
+        # Assuming 'data' corresponds to the reference and 'labels' to the positive samples
+        self.reference = torch.tensor(data)  # Reference data
+        self.positive = torch.tensor(labels)  # Labels (positive samples)
+        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples, adjust if needed
+
 class CustomLoader:
     def __init__(self, data, labels, batch_size):
         self.data = data
@@ -137,7 +146,8 @@ class CustomLoader:
         for i in range(0, len(self.data), self.batch_size):
             batch_data = self.data[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
-            yield CustomBatch(batch_data, batch_labels)  # Wrap data in CustomBatch
+            # Yield CustomBatch object
+            yield CustomBatch(batch_data, batch_labels)
 
     def get_indices(self):
         return self.index
