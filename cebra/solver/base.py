@@ -222,32 +222,44 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             
 
     def step(self, batch: cebra.data.Batch) -> dict:
-        """Perform a single gradient update.
+            """Perform a single gradient update and log the loss.
+        
+            Args:
+                batch: The input samples.
+        
+            Returns:
+                Dictionary containing training metrics.
+            """
+            self.optimizer.zero_grad()
+            prediction = self._inference(batch)
+            loss, align, uniform = self.criterion(
+                prediction.reference,
+                prediction.positive,
+                prediction.negative
+            )
+        
+            loss.backward()
+            self.optimizer.step()
+            self.history.append(loss.item())  # Log loss to history
+        
+            # Logging statistics
+            stats = dict(
+                pos=align.item(),
+                neg=uniform.item(),
+                total=loss.item(),
+                temperature=self.criterion.temperature,
+            )
+            for key, value in stats.items():
+                self.log[key].append(value)
+        
+            # Add external logging (e.g., TensorBoard or custom logger hook)
+            if hasattr(self, "logger_hook") and self.logger_hook is not None:
+                self.logger_hook(num_steps=self.current_step, solver=self)
+        
+            # Increment current step
+            self.current_step += 1
+            return stats
 
-        Args:
-            batch: The input samples
-
-        Returns:
-            Dictionary containing training metrics.
-        """
-        self.optimizer.zero_grad()
-        prediction = self._inference(batch)
-        loss, align, uniform = self.criterion(prediction.reference,
-                                              prediction.positive,
-                                              prediction.negative)
-
-        loss.backward()
-        self.optimizer.step()
-        self.history.append(loss.item())
-        stats = dict(
-            pos=align.item(),
-            neg=uniform.item(),
-            total=loss.item(),
-            temperature=self.criterion.temperature,
-        )
-        for key, value in stats.items():
-            self.log[key].append(value)
-        return stats
 
     def validation(self,
                    loader: cebra.data.Loader,
