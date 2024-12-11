@@ -1,111 +1,99 @@
-import copy
 import torch
-from cebra.solver.base import Solver
-from cebra.data import Loader  # You may need to adjust this import based on your data format
+import copy
+import cebra
+from torch.optim import SGD
+from cebra import CEBRA
 
-class MAMLSolver(Solver):
-    """Custom solver for MAML."""
+class MAMLSolver:
+    def __init__(self, model, criterion, optimizer):
+        self.model = model  # CEBRA model or multi-session model
+        self.criterion = criterion  # CEBRA's contrastive loss or another criterion
+        self.optimizer = optimizer  # Optimizer for the outer loop
     
-    def __init__(self, model, criterion, optimizer, *args, **kwargs):
-        # Initialize the parent Solver class
-        super(MAMLSolver, self).__init__(model, criterion, optimizer, *args, **kwargs)
-
-    def maml_train(self, datas, labels, maml_steps=1, maml_lr=1e-3, save_frequency=None, valid_frequency=None, decode=False, logdir=None):
-        """MAML training: Meta-train across tasks (rats)."""
+    def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
+        self.model.train()  # Set the model in training mode
+        self.to_device("cuda" if torch.cuda.is_available() else "cpu")  # Move model to device
         
-        self.to("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.train()
-
-        meta_optimizer = self.optimizer  # Outer-loop optimizer
-        
-        # Loop over MAML epochs (outer loop)
+        # Outer loop (MAML training)
         for epoch in range(1, maml_steps + 1):
             print(f"Epoch {epoch}: MAML Training")
-            meta_optimizer.zero_grad()  # Reset the meta-optimizer
+            self.optimizer.zero_grad()  # Reset outer loop optimizer
             
-            meta_loss = 0.0
+            meta_loss = 0.0  # Initialize meta-loss for the epoch
             
-            # Loop over tasks (Rats 1, 2, 3) for the inner loop
-            for task_data, task_labels in zip(datas, labels):
-                task_loader = Loader(task_data, task_labels, batch_size=len(task_data))  # Adjust according to your Loader setup
+            # Loop over tasks (each task is a session or model in `model_`)
+            for task_idx, (task_data, task_labels) in enumerate(zip(datas, labels)):
+                task_loader = cebra.data.Loader(task_data, task_labels, batch_size=len(task_data))  # DataLoader for the task
                 
-                # Create a copy of the model for inner-loop updates
-                model_copy = copy.deepcopy(self.model)  
-                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
+                # Access the model for the current task (session) using model_[task_idx]
+                task_model = self.model.model_[task_idx]  # Assuming model_[task_idx] holds a model for each task
                 
-                # Perform training on this task (inner loop)
+                # Make a copy of the model for the inner-loop updates
+                model_copy = copy.deepcopy(task_model)
+                inner_optimizer = SGD(model_copy.parameters(), lr=maml_lr)  # Use SGD for inner-loop updates
+                
+                # Perform inner-loop training (gradient update per task)
                 for batch in task_loader:
-                    stats = self.step(batch, model=model_copy)  # Train using the copied model
-                    loss = stats['total']
+                    loss = self.step(batch, model=model_copy)  # Train using the copied model
                     inner_optimizer.zero_grad()
-                    loss.backward()
-                    inner_optimizer.step()
-
-                # Compute meta-loss on the task (evaluate model_copy)
+                    loss.backward()  # Backpropagate the loss
+                    inner_optimizer.step()  # Update model for the task
+                
+                # Compute the task-specific meta-loss (evaluate model_copy)
                 task_meta_loss = self._meta_loss(task_loader, model_copy)
-                meta_loss += task_meta_loss
+                meta_loss += task_meta_loss  # Add to the total meta-loss for this epoch
 
-            # Outer loop update: average meta-loss across tasks
-            meta_loss /= len(datas)  # Average meta-loss across tasks (rats)
+            # Average the meta-loss across all tasks (outer loop)
+            meta_loss /= len(datas)  # Average meta-loss over tasks
             meta_loss.backward()  # Backpropagate the meta-loss
-            meta_optimizer.step()  # Update the model based on the meta-loss
+            self.optimizer.step()  # Update the model based on the meta-loss
             
             print(f"Meta Loss: {meta_loss.item():.6f}")
-        
-        # After training, save the model if needed
-        if save_frequency is not None:
-            self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
-        
-        if decode:
-            self.decode_history.append(self.decoding(datas, labels))
 
-        if save_hook:
-            save_hook(epoch, self)
+            # Save model periodically
+            if save_frequency and epoch % save_frequency == 0:
+                self.save(logdir, f"checkpoint_{epoch:#07d}.pth")
+            
+            if decode:
+                self.decode_history.append(self.decoding(datas, labels))
+
+        # Final model save
+        self.save(logdir, "checkpoint_final.pth")
 
     def step(self, batch, model=None):
-        """Perform a single gradient update.
-
-        Args:
-            batch: The input samples
-            model: The model to be used for updates (defaults to `self.model`)
-
-        Returns:
-            Dictionary containing training metrics.
-        """
+        """Perform a single gradient update for MAML."""
         if model is None:
             model = self.model
-
         self.optimizer.zero_grad()
-        prediction = self._inference(batch)
-        loss, align, uniform = self.criterion(prediction.reference,
-                                              prediction.positive,
-                                              prediction.negative)
-
-        loss.backward()
-        self.optimizer.step()
-        self.history.append(loss.item())
-        stats = dict(
-            pos=align.item(),
-            neg=uniform.item(),
-            total=loss.item(),
-            temperature=self.criterion.temperature,
-        )
-        for key, value in stats.items():
-            self.log[key].append(value)
-        return stats
-
-    def _meta_loss(self, batch, model):
-        """Compute meta-loss for the updated (task-specific) model."""
-        model.eval()  # Ensure the model is in evaluation mode
-        with torch.no_grad():
-            prediction = model(batch.reference)  # Forward pass
-            loss, _, _ = self.criterion(
-                prediction,
-                batch.positive,
-                batch.negative,
-            )
+        prediction = model(batch.reference)  # Forward pass
+        loss, align, uniform = self.criterion(prediction.reference, prediction.positive, prediction.negative)
+        loss.backward()  # Backpropagate
+        self.optimizer.step()  # Update model parameters
         return loss
 
-    def _inference(self, batch):
-        """Override this method to perform inference with your model."""
-        raise NotImplementedError
+    def _meta_loss(self, batch, model):
+        """Compute meta-loss for the task-specific model."""
+        model.eval()  # Set model to evaluation mode
+        with torch.no_grad():
+            prediction = model(batch.reference)  # Forward pass
+            loss, _, _ = self.criterion(prediction, batch.positive, batch.negative)
+        return loss
+
+    def to_device(self, device):
+        """Move model to the specified device (e.g., 'cuda' or 'cpu')."""
+        self.model.to(device)
+        self.criterion.to(device)
+
+    def save(self, logdir, filename="checkpoint.pth"):
+        """Save model parameters."""
+        if not os.path.exists(logdir):
+            os.makedirs(logdir)
+        savepath = os.path.join(logdir, filename)
+        torch.save(self.model.state_dict(), savepath)
+        print(f"Model saved to {savepath}")
+
+    def decoding(self, datas, labels):
+        """Optional function for decoding or additional metrics."""
+        # Implement decoding logic if needed
+        pass
+
