@@ -173,8 +173,7 @@ class Solver(abc.ABC, cebra.io.HasDevice):
 
     import copy
 
-    def fit(
-            self,
+    def fit(self,
             loader: cebra.data.Loader,  # Single loader for normal training or list of tasks for MAML
             valid_loader: cebra.data.Loader = None,
             *,
