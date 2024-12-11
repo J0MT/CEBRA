@@ -162,55 +162,61 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         loader: cebra.data.Loader,
         valid_loader: cebra.data.Loader = None,
         *,
+        use_maml: bool = False,
+        inner_steps: int = 1,
+        inner_lr: float = 0.01,
         save_frequency: int = None,
         valid_frequency: int = None,
-        decode: bool = False,
         logdir: str = None,
         save_hook: Callable[[int, "Solver"], None] = None,
     ):
-        """Train model for the specified number of steps.
-
-        Args:
-            loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
-                Each batch contains reference, positive and negative input samples.
-            valid_loader: Data loader used for validation of the model.
-            save_frequency: If not `None`, the frequency for automatically saving model checkpoints
-                to `logdir`.
-            valid_frequency: The frequency for running validation on the ``valid_loader`` instance.
-            logdir:  The logging directory for writing model checkpoints. The checkpoints
-                can be read again using the `solver.load` function, or manually via loading the
-                state dict.
-
-        TODO:
-            * Refine the API here. Drop the validation entirely, and implement this via a hook?
-        """
+        fine_tuning_losses = []  # List to store loss values
 
         self.to(loader.device)
+        self.model.train()
 
         iterator = self._get_loader(loader)
-        self.model.train()
         for num_steps, batch in iterator:
-            stats = self.step(batch)
-            iterator.set_description(stats)
+            if use_maml:
+                # MAML Training Logic
+                meta_gradients = []
+                task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
+                for task_batch in batch.split_tasks():
+                    task_model = copy.deepcopy(self.model)
+                    task_optimizer.zero_grad()
+                    for _ in range(inner_steps):
+                        loss, _, _ = self.criterion(
+                            task_model(task_batch.reference),
+                            task_model(task_batch.positive),
+                            task_model(task_batch.negative),
+                        )
+                        loss.backward()
+                        task_optimizer.step()
+                    meta_loss, _, _ = self.criterion(
+                        task_model(task_batch.reference),
+                        task_model(task_batch.positive),
+                        task_model(task_batch.negative),
+                    )
+                    grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
+                    meta_gradients.append(grads)
+                for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
+                    param.grad = torch.stack(grads).mean(dim=0)
+                self.optimizer.step()
+                fine_tuning_losses.append(meta_loss.item())  # Log the loss
+            else:
+                # Default Training Logic
+                stats = self.step(batch)
+                fine_tuning_losses.append(stats["total"])  # Log the total CEBRA loss
 
-            if save_frequency is None:
-                continue
-            save_model = num_steps % save_frequency == 0
-            run_validation = (valid_loader
-                              is not None) and (num_steps % valid_frequency
-                                                == 0)
-            if run_validation:
-                validation_loss = self.validation(valid_loader)
-                if self.best_loss is None or validation_loss < self.best_loss:
-                    self.best_loss = validation_loss
-                    self.save(logdir, "checkpoint_best.pth")
-            if save_model:
-                if decode:
-                    self.decode_history.append(
-                        self.decoding(loader, valid_loader))
-                if save_hook is not None:
-                    save_hook(num_steps, self)
+            # Save checkpoints
+            if save_frequency and num_steps % save_frequency == 0:
                 self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+
+        return fine_tuning_losses  # Return the list of losses
+                        
+                            
+
+            
 
     def step(self, batch: cebra.data.Batch) -> dict:
         """Perform a single gradient update.
