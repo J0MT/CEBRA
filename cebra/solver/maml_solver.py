@@ -3,27 +3,27 @@ import copy
 import cebra
 from torch.optim import Adam
 from cebra import CEBRA
-from cebra.solver import Solver  # Import the Solver class if needed
+from cebra.solver import Solver  # Import Solver if needed
 
-# Custom Batch Class
+# Define CustomBatch to handle data and labels
 class CustomBatch:
     def __init__(self, data, labels):
-        self.reference = torch.tensor(data, dtype=torch.float32)  # Wrap the data in 'reference'
-        self.positive = torch.tensor(labels, dtype=torch.float32)  # Convert labels to tensor
-        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples (same shape as positive)
+        # Wrapping data and labels as tensors
+        self.reference = torch.tensor(data, dtype=torch.float32)  # Input data
+        self.positive = torch.tensor(labels, dtype=torch.float32)  # Labels for supervised learning
+        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples (can be modified later)
 
-# Define MAMLSolver class
+# Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
     def _inference(self, batch):
         """Implement the forward pass for MAML, given a batch of data."""
-        return self.model(batch.reference)
+        return self.model(batch.reference)  # Forward pass using reference data
 
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
-        # Move model to the appropriate device
-        self.to("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.train()  # Set the model in training mode
+        self.to("cuda" if torch.cuda.is_available() else "cpu")  # Move to GPU if available
+        self.model.train()  # Set the model to training mode
         
         meta_optimizer = self.optimizer  # Use the outer-loop optimizer
 
@@ -44,7 +44,12 @@ class MAMLSolver(Solver):
                 inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
 
                 # Inner loop: perform task-specific updates
-                for batch_data, batch_labels in task_loader:
+                for batch in task_loader:
+                    # Access batch.reference and batch.positive
+                    batch_data = batch.reference
+                    batch_labels = batch.positive
+                    
+                    # Perform a gradient update for this batch
                     stats = self.step(batch_data, batch_labels)  # No need to pass 'model' explicitly
                     loss = stats['total']
                     inner_optimizer.zero_grad()
@@ -120,7 +125,7 @@ class MAMLSolver(Solver):
             "log": self.log,
         }
 
-# Define CustomLoader for task-specific data
+# Define CustomLoader to create batches for training
 class CustomLoader:
     def __init__(self, data, labels, batch_size):
         self.data = data
@@ -136,3 +141,4 @@ class CustomLoader:
 
     def get_indices(self):
         return self.index
+
