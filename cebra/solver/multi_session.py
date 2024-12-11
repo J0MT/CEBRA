@@ -38,23 +38,7 @@ class MultiSessionSolver(abc_.Solver):
     """Multi session training, contrasting pairs of neural data."""
 
     _variant_name = "multi-session"
-    def __init__(self, model, criterion, optimizer, device: str = "cpu", **kwargs):
-        super().__init__(model, criterion, optimizer, device=device, **kwargs)
-        self._device = device  # Explicitly set the device
-        self.model = [m.to(self._device) for m in model]  # Move all models to device
-        self.criterion = criterion
-        self.optimizer = optimizer
-        self.history = []
-        self.log = {"pos": [], "neg": [], "total": []}
-        self.tqdm_on = kwargs.get("tqdm_on", True)  # Progress bar control (optional)
-    
-    def to(self, device: str):
-        """Move all models and parameters to the specified device."""
-        self._device = device
-        self.model = [m.to(self._device) for m in self.model]  # Move list of models
-        self.criterion.to(self._device)  # Move criterion to device
-        return self
-    
+
     def _mix(self, array: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         shape = array.shape
         n, m = shape[:2]
