@@ -1,16 +1,21 @@
-import torch
+iimport torch
 import copy
 import cebra
-from torch.optim import SGD
-from cebra import CEBRA
-from torch import optim
-
-import copy
-import torch
 from torch.optim import Adam
-from cebra.solver import Solver  # Or import your custom solver if applicable
+from cebra import CEBRA
+from cebra.solver import Solver  # Import the Solver class if needed
+from torch.utils.data import DataLoader
 
+# Define MAMLSolver class
 class MAMLSolver(Solver):
+    def _inference(self, batch):
+        """
+        Implement the forward pass for MAML, given a batch of data.
+        This method defines how the data should be passed through the model.
+        """
+        # Assuming the batch has the data in batch.reference (adjust according to your data format)
+        return self.model(batch.reference)
+
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
@@ -115,10 +120,8 @@ class MAMLSolver(Solver):
             "log": self.log,
         }
 
-import torch
-from cebra.data import Loader
-
-class CustomLoader(Loader):
+# Define CustomLoader for task-specific data
+class CustomLoader:
     def __init__(self, data, labels, batch_size):
         self.data = data
         self.labels = labels
