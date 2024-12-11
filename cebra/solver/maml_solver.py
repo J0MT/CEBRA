@@ -1,4 +1,4 @@
-iimport torch
+import torch
 import copy
 import cebra
 from torch.optim import Adam
