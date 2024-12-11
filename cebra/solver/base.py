@@ -157,6 +157,20 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             "tqdm" if self.tqdm_on else "off",
         )
 
+    import copy
+    
+    def _meta_loss(self, batch, model):
+        """Compute meta-loss for the updated (task-specific) model."""
+        model.eval()  # Ensure the model is in evaluation mode
+        with torch.no_grad():
+            prediction = model(batch.reference)  # Forward pass
+            loss, _, _ = self.criterion(
+                prediction,
+                batch.positive,
+                batch.negative,
+            )
+        return loss
+
     def fit(
         self,
         loader: cebra.data.Loader,
@@ -167,54 +181,75 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         decode: bool = False,
         logdir: str = None,
         save_hook: Callable[[int, "Solver"], None] = None,
+        use_maml: bool = False,  # NEW: Toggle MAML
+        maml_steps: int = 1,     # NEW: Number of inner-loop steps
+        maml_lr: float = 1e-3,   # NEW: Inner-loop learning rate
     ):
         """Train model for the specified number of steps.
     
         Args:
             loader: Data loader, which is an iterator over `cebra.data.Batch` instances.
-                Each batch contains reference, positive and negative input samples.
             valid_loader: Data loader used for validation of the model.
-            save_frequency: If not `None`, the frequency for automatically saving model checkpoints
-                to `logdir`.
-            valid_frequency: The frequency for running validation on the ``valid_loader`` instance.
-            logdir:  The logging directory for writing model checkpoints. The checkpoints
-                can be read again using the `solver.load` function, or manually via loading the
-                state dict.
-    
-        TODO:
-            * Refine the API here. Drop the validation entirely, and implement this via a hook?
+            save_frequency: Frequency for saving model checkpoints.
+            valid_frequency: Frequency for running validation.
+            decode: Decode during training.
+            logdir: Logging directory for writing model checkpoints.
+            save_hook: Hook function to be executed after saving.
+            use_maml: If True, enable MAML training.
+            maml_steps: Number of inner-loop steps for MAML.
+            maml_lr: Learning rate for MAML's inner loop updates.
         """
-    
         self.to(loader.device)
     
         iterator = self._get_loader(loader)
         self.model.train()
+        meta_optimizer = self.optimizer  # Outer-loop optimizer (for MAML)
+    
         for num_steps, batch in iterator:
-            stats = self.step(batch)
-            iterator.set_description(stats)
+            if use_maml:  # NEW: MAML Logic
+                # ---- Inner Loop ----
+                model_copy = copy.deepcopy(self.model)  # Clone model for inner-loop updates
+                inner_optimizer = torch.optim.SGD(model_copy.parameters(), lr=maml_lr)
     
-            # NEW: Log loss every 50 steps
-            if num_steps % 50 == 0:
-                print(f"Step {num_steps}: Loss = {stats['total']:.6f}")
+                for _ in range(maml_steps):
+                    stats = self.step(batch, model=model_copy)
+                    loss = stats['total']
+                    inner_optimizer.zero_grad()
+                    loss.backward()
+                    inner_optimizer.step()
     
-            if save_frequency is None:
-                continue
-            save_model = num_steps % save_frequency == 0
-            run_validation = (valid_loader
-                              is not None) and (num_steps % valid_frequency
-                                                == 0)
-            if run_validation:
+                # ---- Outer Loop ----
+                meta_loss = self._meta_loss(batch, model_copy)
+                meta_optimizer.zero_grad()
+                meta_loss.backward()
+                meta_optimizer.step()
+    
+                # Log meta-loss every 50 steps
+                if num_steps % 50 == 0:
+                    print(f"Step {num_steps}: Meta Loss = {meta_loss.item():.6f}")
+                    iterator.set_description({"meta_loss": meta_loss.item()})
+    
+            else:  # Standard CEBRA Training
+                stats = self.step(batch)
+                if num_steps % 50 == 0:
+                    print(f"Step {num_steps}: Loss = {stats['total']:.6f}")
+                    iterator.set_description(stats)
+    
+            # Save/validate as per original logic
+            if save_frequency is not None and num_steps % save_frequency == 0:
+                self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+    
+            if valid_loader and num_steps % valid_frequency == 0:
                 validation_loss = self.validation(valid_loader)
                 if self.best_loss is None or validation_loss < self.best_loss:
                     self.best_loss = validation_loss
                     self.save(logdir, "checkpoint_best.pth")
-            if save_model:
-                if decode:
-                    self.decode_history.append(
-                        self.decoding(loader, valid_loader))
-                if save_hook is not None:
-                    save_hook(num_steps, self)
-                self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+    
+            if decode:
+                self.decode_history.append(self.decoding(loader, valid_loader))
+    
+            if save_hook is not None:
+                save_hook(num_steps, self)
 
     def step(self, batch: cebra.data.Batch) -> dict:
         """Perform a single gradient update.
