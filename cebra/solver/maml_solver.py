@@ -4,16 +4,18 @@ import cebra
 from torch.optim import Adam
 from cebra import CEBRA
 from cebra.solver import Solver  # Import the Solver class if needed
-from torch.utils.data import DataLoader
+
+# Custom Batch Class
+class CustomBatch:
+    def __init__(self, data, labels):
+        self.reference = torch.tensor(data)  # Wrap the data in 'reference'
+        self.positive = torch.tensor(labels)  # Assume the labels are the positive samples
+        self.negative = torch.zeros_like(labels)  # Placeholder for negative samples, adjust if needed
 
 # Define MAMLSolver class
 class MAMLSolver(Solver):
     def _inference(self, batch):
-        """
-        Implement the forward pass for MAML, given a batch of data.
-        This method defines how the data should be passed through the model.
-        """
-        # Assuming the batch has the data in batch.reference (adjust according to your data format)
+        """Implement the forward pass for MAML, given a batch of data."""
         return self.model(batch.reference)
 
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
@@ -77,10 +79,8 @@ class MAMLSolver(Solver):
             model = self.model
 
         self.optimizer.zero_grad()
-        prediction = self._inference(batch)
-        loss, align, uniform = self.criterion(prediction.reference,
-                                              prediction.positive,
-                                              prediction.negative)
+        prediction = self._inference(batch)  # Use the batch with .reference
+        loss, align, uniform = self.criterion(prediction, batch.positive, batch.negative)
         loss.backward()
         self.optimizer.step()
 
@@ -132,7 +132,7 @@ class CustomLoader:
         for i in range(0, len(self.data), self.batch_size):
             batch_data = self.data[i:i + self.batch_size]
             batch_labels = self.labels[i:i + self.batch_size]
-            yield batch_data, batch_labels
+            yield CustomBatch(batch_data, batch_labels)  # Wrap data in CustomBatch
 
     def get_indices(self):
         return self.index
