@@ -86,7 +86,7 @@ class Solver(BaseSolver, cebra.io.HasDevice):
         tqdm_on: Use ``tqdm`` for showing a progress bar during training.
     """
     def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__()  # Initialize BaseSolver attributes
+        super().__init__(model, criterion, optimizer, **kwargs)  # Initialize BaseSolver attributes
         cebra.io.HasDevice.__init__(self)  # Initialize device management
         self.model = model
         self.criterion = criterion
