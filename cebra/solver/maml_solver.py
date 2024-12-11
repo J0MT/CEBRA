@@ -70,16 +70,32 @@ class MAMLSolver(Solver):
         self.save(logdir, "checkpoint_final.pth")
 
     def step(self, batch):
+        """Perform a single gradient update on the model"""
         self.optimizer.zero_grad()
-        prediction = self._inference(batch)
+        
+        # Forward pass using the reference input
+        prediction = self._inference(batch)  # This gives the output tensor
+        
+        # Loss calculation: Use batch.reference, batch.positive, and prediction
         loss, align, uniform = self.criterion(
-            prediction.reference, prediction.positive, prediction.negative
+            prediction,  # Model's output (prediction)
+            batch.positive,  # Positive labels
+            batch.negative   # Negative samples (currently placeholders as zeros)
         )
+        
+        # Backpropagation and optimizer step
         loss.backward()
         self.optimizer.step()
-
-        stats = dict(pos=align.item(), neg=uniform.item(), total=loss.item())
+        
+        # Return stats for logging
+        stats = dict(
+            pos=align.item(),
+            neg=uniform.item(),
+            total=loss.item(),
+            temperature=self.criterion.temperature,
+        )
         return stats
+
 
     def _meta_loss(self, loader, model):
         model.eval()
