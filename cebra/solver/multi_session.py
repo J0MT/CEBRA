@@ -47,7 +47,14 @@ class MultiSessionSolver(abc_.Solver):
         self.history = []
         self.log = {"pos": [], "neg": [], "total": []}
         self.tqdm_on = kwargs.get("tqdm_on", True)  # Progress bar control (optional)
-
+    
+    def to(self, device: str):
+        """Move all models and parameters to the specified device."""
+        self._device = device
+        self.model = [m.to(self._device) for m in self.model]  # Move list of models
+        self.criterion.to(self._device)  # Move criterion to device
+        return self
+    
     def _mix(self, array: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         shape = array.shape
         n, m = shape[:2]
