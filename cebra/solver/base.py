@@ -159,12 +159,13 @@ class Solver(abc.ABC, cebra.io.HasDevice):
 
     def fit(
             self,
-            loader: cebra.data.Loader = None,
-            tasks: list = None,  # List of pre-split tasks [(data_1, label_1), (data_2, label_2), ...]
+            loader: cebra.data.Loader = None,  # Standard CEBRA loader
+            tasks: list = None,  # Pre-split tasks [(data_1, labels_1), ...]
+            valid_loader: cebra.data.Loader = None,  # Optional validation loader
             *,
-            use_maml: bool = False,
-            inner_steps: int = 1,
-            inner_lr: float = 0.01,
+            use_maml: bool = False,  # Enable MAML logic
+            inner_steps: int = 1,  # MAML inner-loop steps
+            inner_lr: float = 0.01,  # MAML inner-loop learning rate
             save_frequency: int = None,
             valid_frequency: int = None,
             decode: bool = False,
@@ -172,66 +173,68 @@ class Solver(abc.ABC, cebra.io.HasDevice):
             save_hook: Callable[[int, "Solver"], None] = None,
         ):
         """
-        Train model with optional MAML-based meta-learning using either a data loader or pre-split tasks.
+        Train model with support for loaders, task-based training, and optional MAML.
     
         Args:
-            loader: CEBRA data loader for default training.
+            loader: Data loader for standard CEBRA training.
             tasks: List of pre-split tasks, where each task is (data, labels).
-            use_maml: Enable MAML meta-learning.
+            valid_loader: Data loader for validation.
+            use_maml: Enable MAML meta-learning for task-based training.
             inner_steps: Number of inner-loop optimization steps for MAML.
-            inner_lr: Learning rate for the inner loop.
+            inner_lr: Learning rate for the inner-loop optimization in MAML.
             save_frequency: Frequency for saving model checkpoints.
-            valid_frequency: Frequency for validation.
-            decode: Whether to run decoding logic during checkpoint saving.
-            logdir: Directory to save model checkpoints.
-            save_hook: Optional function to call during saving.
+            valid_frequency: Frequency for running validation.
+            decode: Whether to run decoding logic when saving checkpoints.
+            logdir: Directory for saving model checkpoints.
+            save_hook: Optional hook function for saving additional states.
     
         Returns:
-            losses: A list of losses recorded during training.
+            stats_history: A list of loss statistics over tasks or steps.
         """
-
-        losses = []  # List to store average loss per step/task
+    
+        stats_history = []  # Store loss or statistics
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
         self.model.train()
     
-        # --- Training Mode 1: Use Loader ---
+        # --- Mode 1: Standard Training with Loader ---
         if loader is not None:
-            print("Training with Loader...")
+            print("Training using Loader...")
             iterator = self._get_loader(loader)
-    
             for num_steps, batch in iterator:
-                self.optimizer.zero_grad()
-                predictions = self.model(batch.reference)
-                loss = self.criterion(predictions, batch.positive)
-                loss.backward()
-                self.optimizer.step()
+                stats = self.step(batch)  # Perform a training step
+                stats_history.append(stats["total"])  # Log total loss
     
-                # Log loss
-                losses.append(loss.item())
+                # Run validation
+                if valid_frequency and num_steps % valid_frequency == 0 and valid_loader is not None:
+                    validation_loss = self.validation(valid_loader)
+                    print(f"Validation Loss at step {num_steps}: {validation_loss:.4f}")
+                    if self.best_loss is None or validation_loss < self.best_loss:
+                        self.best_loss = validation_loss
+                        self.save(logdir, "checkpoint_best.pth")
     
-                # Checkpoint saving
+                # Save checkpoints
                 if save_frequency and num_steps % save_frequency == 0:
                     if decode:
                         print(f"Running decoding at step {num_steps}...")
-                        self.decode_history.append(self.decoding(loader))
+                        self.decode_history.append(self.decoding(loader, valid_loader))
     
                     if save_hook is not None:
                         save_hook(num_steps, self)
-    
                     self.save(logdir, f"checkpoint_{num_steps:#07d}.pth")
+                    print(f"Checkpoint saved at step {num_steps}.")
     
-                print(f"Step {num_steps}: Loss = {loss.item():.4f}")
+                print(f"Step {num_steps}: Loss = {stats['total']:.4f}")
     
-        # --- Training Mode 2: Use Tasks ---
+        # --- Mode 2: Task-Based Training ---
         elif tasks is not None:
-            print("Training with Tasks...")
+            print("Training using Tasks...")
             for task_index, (task_data, task_labels) in enumerate(tasks):
                 task_data = torch.tensor(task_data).float().to(self.device)
                 task_labels = torch.tensor(task_labels).float().to(self.device)
     
                 if use_maml:
-                    # MAML Training Logic
+                    # MAML Logic: Inner optimization and meta-updates
                     meta_gradients = []
                     task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
                     task_model = copy.deepcopy(self.model)
@@ -242,16 +245,18 @@ class Solver(abc.ABC, cebra.io.HasDevice):
                         loss.backward()
                         task_optimizer.step()
     
-                    # Meta-loss computation
+                    # Compute meta-loss
                     meta_loss = self.criterion(task_model(task_data), task_labels)
                     grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
                     meta_gradients.append(grads)
     
+                    # Average gradients and update the global model
                     for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
                         param.grad = torch.stack(grads).mean(dim=0)
                     self.optimizer.step()
     
-                    losses.append(meta_loss.item())
+                    stats_history.append(meta_loss.item())
+                    print(f"Task {task_index + 1}: Meta-Loss = {meta_loss.item():.4f}")
     
                 else:
                     # Default Task Training
@@ -261,19 +266,18 @@ class Solver(abc.ABC, cebra.io.HasDevice):
                     loss.backward()
                     self.optimizer.step()
     
-                    losses.append(loss.item())
+                    stats_history.append(loss.item())
+                    print(f"Task {task_index + 1}: Loss = {loss.item():.4f}")
     
                 # Save checkpoints
                 if save_frequency and (task_index + 1) % save_frequency == 0:
                     self.save(logdir, f"checkpoint_task_{task_index + 1:#07d}.pth")
-                    print(f"Checkpoint saved at task {task_index + 1}.")
-    
-                print(f"Task {task_index + 1}/{len(tasks)}: Loss = {losses[-1]:.4f}")
+                    print(f"Checkpoint saved for task {task_index + 1}.")
     
         else:
             raise ValueError("Either 'loader' or 'tasks' must be provided for training.")
     
-        return losses  # Return the list of losses
+        return stats_history  # Return loss or stats
 
 
 
