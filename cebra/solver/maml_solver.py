@@ -1,6 +1,5 @@
 import torch
 import copy
-import cebra
 from torch.optim import Adam
 from cebra import CEBRA
 from cebra.solver import Solver  # Import Solver if needed
@@ -13,14 +12,13 @@ class CustomBatch:
         self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples
 
 
-
 # Define the MAMLSolver class which inherits from Solver
 class MAMLSolver(Solver):
-     def _inference(self, batch):
+    def _inference(self, batch):
         """Perform the forward pass using the reference data."""
         # Assuming the model is set up to take batch.reference as input
         return self.model(batch.reference)  # Perform inference using reference data from the batch
-         
+
     def maml_train(self, datas, labels, maml_steps=5, maml_lr=1e-3, save_frequency=None, logdir="./checkpoints", decode=False):
         """MAML training loop integrated with CEBRA's Solver."""
         
@@ -123,6 +121,5 @@ class CustomLoader:
 
     def get_indices(self):
         return self.index
-
 
 
