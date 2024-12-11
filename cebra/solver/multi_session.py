@@ -38,6 +38,14 @@ class MultiSessionSolver(abc_.Solver):
     """Multi session training, contrasting pairs of neural data."""
 
     _variant_name = "multi-session"
+    def __init__(self, model, criterion, optimizer, **kwargs):
+        super().__init__()  # Initialize BaseSolver attributes like current_step, logger_hook
+        self.model = model  # Multi-session model (list of models)
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.history = []
+        self.log = {"pos": [], "neg": [], "total": []}
+        self.tqdm_on = kwargs.get("tqdm_on", True)  # Progress bar control (optional)
 
     def _mix(self, array: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         shape = array.shape
