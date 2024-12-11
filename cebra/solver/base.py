@@ -90,14 +90,15 @@ class Solver(BaseSolver, cebra.io.HasDevice):
             criterions in CEBRA, also contains the value of the ``temperature``.
         tqdm_on: Use ``tqdm`` for showing a progress bar during training.
     """
-    def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__(**kwargs)  # Pass optional arguments to BaseSolver
+    def __init__(self, model, criterion, optimizer, device: str = "cpu", **kwargs):
+        super().__init__(**kwargs)  # Initialize BaseSolver
         cebra.io.HasDevice.__init__(self)  # Initialize device management
-        self.model = model
+        self._device = device  # Explicitly set the device
+        self.model = model.to(self._device)  # Move model to device
         self.criterion = criterion
         self.optimizer = optimizer
-        self.history = []  # To store loss values
-        self.decode_history = []  # Deprecated, for compatibility
+        self.history = []
+        self.decode_history = []
         self.log = {"pos": [], "neg": [], "total": [], "temperature": []}
         self.best_loss = float("inf")
     
