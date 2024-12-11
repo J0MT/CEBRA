@@ -67,7 +67,7 @@ class BaseSolver(abc.ABC):
 
 
 
-class Solver(abc.ABC, cebra.io.HasDevice):
+class Solver(BaseSolver, cebra.io.HasDevice):
     """Solver base class.
 
     A solver contains helper methods for bundling a model, criterion and optimizer.
