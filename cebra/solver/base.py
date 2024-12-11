@@ -158,97 +158,97 @@ class Solver(abc.ABC, cebra.io.HasDevice):
         )
 
     def fit(
-        self,
-        tasks: list,  # List of pre-split tasks [(data_1, label_1), (data_2, label_2), ...]
-        *,
-        use_maml: bool = False,
-        inner_steps: int = 1,
-        inner_lr: float = 0.01,
-        save_frequency: int = None,
-        valid_frequency: int = None,
-        decode: bool = False,
-        logdir: str = None,
-        save_hook: Callable[[int, "Solver"], None] = None,
-    ):
-    """
-    Train model with optional MAML-based meta-learning using pre-split tasks.
+            self,
+            tasks: list,  # List of pre-split tasks [(data_1, label_1), (data_2, label_2), ...]
+            *,
+            use_maml: bool = False,
+            inner_steps: int = 1,
+            inner_lr: float = 0.01,
+            save_frequency: int = None,
+            valid_frequency: int = None,
+            decode: bool = False,
+            logdir: str = None,
+            save_hook: Callable[[int, "Solver"], None] = None,
+        ):
+        """
+        Train model with optional MAML-based meta-learning using pre-split tasks.
+    
+        Args:
+            tasks: List of pre-split tasks, where each task is (data, labels).
+            use_maml: Enable MAML meta-learning.
+            inner_steps: Number of inner-loop optimization steps for MAML.
+            inner_lr: Learning rate for the inner loop.
+            save_frequency: Frequency for saving model checkpoints.
+            valid_frequency: Frequency for validation.
+            decode: Whether to run decoding logic during checkpoint saving.
+            logdir: Directory to save model checkpoints.
+            save_hook: Optional function to call during saving.
+        Returns:
+            task_losses: A list of average losses for each task.
+        """
 
-    Args:
-        tasks: List of pre-split tasks, where each task is (data, labels).
-        use_maml: Enable MAML meta-learning.
-        inner_steps: Number of inner-loop optimization steps for MAML.
-        inner_lr: Learning rate for the inner loop.
-        save_frequency: Frequency for saving model checkpoints.
-        valid_frequency: Frequency for validation.
-        decode: Whether to run decoding logic during checkpoint saving.
-        logdir: Directory to save model checkpoints.
-        save_hook: Optional function to call during saving.
-    Returns:
-        task_losses: A list of average losses for each task.
-    """
-
-    task_losses = []  # List to store average loss per task
-    self.to("cuda" if torch.cuda.is_available() else "cpu")  # Send model to device
-    self.model.train()
-
-    # Outer Loop: Iterate through tasks
-    for task_index, (task_data, task_labels) in enumerate(tasks):
-        task_data = torch.tensor(task_data).float().to(self.device)
-        task_labels = torch.tensor(task_labels).float().to(self.device)
-
-        if use_maml:
-            # MAML Training Logic
-            meta_gradients = []
-            task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
-            task_model = copy.deepcopy(self.model)
-
-            for _ in range(inner_steps):
-                task_optimizer.zero_grad()
+        task_losses = []  # List to store average loss per task
+        self.to("cuda" if torch.cuda.is_available() else "cpu")  # Send model to device
+        self.model.train()
+    
+        # Outer Loop: Iterate through tasks
+        for task_index, (task_data, task_labels) in enumerate(tasks):
+            task_data = torch.tensor(task_data).float().to(self.device)
+            task_labels = torch.tensor(task_labels).float().to(self.device)
+    
+            if use_maml:
+                # MAML Training Logic
+                meta_gradients = []
+                task_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
+                task_model = copy.deepcopy(self.model)
+    
+                for _ in range(inner_steps):
+                    task_optimizer.zero_grad()
+                    task_predictions = task_model(task_data)
+                    loss = self.criterion(task_predictions, task_labels)  # Compute loss
+                    loss.backward()
+                    task_optimizer.step()
+    
+                # Compute meta-loss for the task
                 task_predictions = task_model(task_data)
-                loss = self.criterion(task_predictions, task_labels)  # Compute loss
+                meta_loss = self.criterion(task_predictions, task_labels)
+                grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
+                meta_gradients.append(grads)
+    
+                # Average gradients and update the global model
+                for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
+                    param.grad = torch.stack(grads).mean(dim=0)
+                self.optimizer.step()
+    
+                # Log loss for this task
+                task_losses.append(meta_loss.item())
+    
+            else:
+                # Default Training Logic (Non-MAML)
+                self.optimizer.zero_grad()
+                predictions = self.model(task_data)
+                loss = self.criterion(predictions, task_labels)
                 loss.backward()
-                task_optimizer.step()
-
-            # Compute meta-loss for the task
-            task_predictions = task_model(task_data)
-            meta_loss = self.criterion(task_predictions, task_labels)
-            grads = torch.autograd.grad(meta_loss, self.model.parameters(), retain_graph=True)
-            meta_gradients.append(grads)
-
-            # Average gradients and update the global model
-            for param, grads in zip(self.model.parameters(), zip(*meta_gradients)):
-                param.grad = torch.stack(grads).mean(dim=0)
-            self.optimizer.step()
-
-            # Log loss for this task
-            task_losses.append(meta_loss.item())
-
-        else:
-            # Default Training Logic (Non-MAML)
-            self.optimizer.zero_grad()
-            predictions = self.model(task_data)
-            loss = self.criterion(predictions, task_labels)
-            loss.backward()
-            self.optimizer.step()
-
-            # Log loss for this task
-            task_losses.append(loss.item())
-
-        # Save checkpoints
-        if save_frequency and (task_index + 1) % save_frequency == 0:
-            if decode:
-                print(f"Running decoding at task {task_index + 1}...")
-                self.decode_history.append(self.decoding(task_data, task_labels))
-
-            if save_hook is not None:
-                save_hook(task_index + 1, self)
-
-            self.save(logdir, f"checkpoint_{task_index + 1:#07d}.pth")
-
-        # Print progress
-        print(f"Task {task_index + 1}/{len(tasks)}: Loss = {task_losses[-1]:.4f}")
-
-    return task_losses  # Return the list of average losses for each task
+                self.optimizer.step()
+    
+                # Log loss for this task
+                task_losses.append(loss.item())
+    
+            # Save checkpoints
+            if save_frequency and (task_index + 1) % save_frequency == 0:
+                if decode:
+                    print(f"Running decoding at task {task_index + 1}...")
+                    self.decode_history.append(self.decoding(task_data, task_labels))
+    
+                if save_hook is not None:
+                    save_hook(task_index + 1, self)
+    
+                self.save(logdir, f"checkpoint_{task_index + 1:#07d}.pth")
+    
+            # Print progress
+            print(f"Task {task_index + 1}/{len(tasks)}: Loss = {task_losses[-1]:.4f}")
+    
+        return task_losses  # Return the list of average losses for each task
 
 
 
