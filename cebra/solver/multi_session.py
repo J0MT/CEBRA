@@ -39,7 +39,7 @@ class MultiSessionSolver(abc_.Solver):
 
     _variant_name = "multi-session"
     def __init__(self, model, criterion, optimizer, **kwargs):
-        super().__init__()  # Initialize BaseSolver attributes like current_step, logger_hook
+        super().__init__(model, criterion, optimizer, **kwargs)  # Initialize BaseSolver attributes like current_step, logger_hook
         self.model = model  # Multi-session model (list of models)
         self.criterion = criterion
         self.optimizer = optimizer
