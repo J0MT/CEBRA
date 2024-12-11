@@ -10,23 +10,25 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Custom Batch Class
 class CustomBatch:
     def __init__(self, data, labels, device):
-        self.reference = torch.tensor(data).to(device)
-        self.positive = torch.tensor(labels).to(device)
+        # Ensure tensors are cast to float32 and moved to the correct device
+        self.reference = torch.tensor(data, dtype=torch.float32).to(device)
+        self.positive = torch.tensor(labels, dtype=torch.float32).to(device)
         self.negative = torch.zeros_like(self.positive).to(device)
 
 # Custom Data Loader
 class CustomLoader:
     def __init__(self, data, labels, batch_size, device):
-        self.data = data
-        self.labels = labels
+        self.data = torch.tensor(data, dtype=torch.float32)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
         self.batch_size = batch_size
         self.device = device
 
     def __iter__(self):
         for i in range(0, len(self.data), self.batch_size):
-            batch_data = self.data[i:i + self.batch_size]
-            batch_labels = self.labels[i:i + self.batch_size]
+            batch_data = self.data[i:i + self.batch_size].to(self.device)
+            batch_labels = self.labels[i:i + self.batch_size].to(self.device)
             yield CustomBatch(batch_data, batch_labels, self.device)
+
 
 # MAML Solver Implementation
 class MAMLSolver(Solver):
