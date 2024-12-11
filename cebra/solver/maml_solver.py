@@ -8,9 +8,9 @@ from cebra.solver import Solver  # Import the Solver class if needed
 # Custom Batch Class
 class CustomBatch:
     def __init__(self, data, labels):
-        self.reference = torch.tensor(data)  # Wrap the data in 'reference'
-        self.positive = torch.tensor(labels)  # Assume the labels are the positive samples
-        self.negative = torch.zeros_like(labels)  # Placeholder for negative samples, adjust if needed
+        self.reference = torch.tensor(data, dtype=torch.float32)  # Wrap the data in 'reference'
+        self.positive = torch.tensor(labels, dtype=torch.float32)  # Convert labels to tensor
+        self.negative = torch.zeros_like(self.positive)  # Placeholder for negative samples (same shape as positive)
 
 # Define MAMLSolver class
 class MAMLSolver(Solver):
