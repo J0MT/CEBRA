@@ -53,6 +53,7 @@ class BaseSolver(abc.ABC):
     def __init__(self):
         self.current_step = 0  # Step counter for all solvers
         self.logger_hook = None  # Optional external logger hook
+        self.tqdm_on = True  # Initialize tqdm flag
 
     @abc.abstractmethod
     def step(self, batch):
