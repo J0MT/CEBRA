@@ -204,10 +204,12 @@ class Solver(abc.ABC, cebra.io.HasDevice):
                     param.grad = torch.stack(grads).mean(dim=0)
                 self.optimizer.step()
                 fine_tuning_losses.append(meta_loss.item())  # Log the loss
+                step_loss = meta_loss.item()  # Extract loss value for return
             else:
                 # Default Training Logic
                 stats = self.step(batch)
                 fine_tuning_losses.append(stats["total"])  # Log the total CEBRA loss
+                step_loss = stats["total"]  # Extract loss value for return
 
             # Save checkpoints
             if save_frequency and num_steps % save_frequency == 0:
@@ -233,7 +235,8 @@ class Solver(abc.ABC, cebra.io.HasDevice):
                     self.best_loss = validation_loss
                     self.save(logdir, "checkpoint_best.pth")
 
-        return fine_tuning_losses  # Return the list of losses
+        return fine_tuning_losses, step_loss  # Return the list of losses and step loss
+
 
                         
                             
